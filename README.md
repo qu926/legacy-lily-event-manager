@@ -34,7 +34,7 @@ npm.cmd run check
 - `eyebrow`: ロゴ横の小見出し。
 - `logoPath` / `logoAlt`: Lilyロゴのパスと代替テキスト。
 - `localStorageVersion`: ブラウザ内保存キーの版。現在は `v2` です。
-- `storageMode`: `"local"` または `"supabase"`。
+- `storageMode`: `"local"` または `"supabase"`。現在は共有DB同期のため `"supabase"` です。
 - `supabaseUrl` / `supabaseAnonKey` / `stateRowId`: Supabase の接続設定と保存行 ID。
 - `core.sitePassword` / `core.adminPassword`: 簡易ロック用パスワード。公開前に必ず変更します。
 - `core.initialUsers`: 初回起動時に登録するメンバー。現在は `Lily運営` のみです。
@@ -60,12 +60,12 @@ https://qu926.github.io/legacy-lily-event-manager/
 
 ## データ保存
 
-既定の `storageMode: "local"` では `localStorage` に保存します。端末やブラウザをまたいで共有する場合は Supabase を設定します。
+現在の `storageMode: "supabase"` では Supabase の `app_state` に同期します。端末やブラウザをまたいで同じ状態を共有できます。
 
 1. Supabase でプロジェクトを作成します。
 2. `supabase/schema.sql` 内の `'legacy-lily-event-manager'` が、`js/config.js` の `stateRowId` と一致していることを確認します。
 3. SQL Editor でスキーマを実行します。
-4. `js/config.js` の `storageMode` を `"supabase"` に変更し、Project URL と publishable key または anon public key を設定します。
+4. `js/config.js` の `storageMode` が `"supabase"` で、Project URL と publishable key または anon public key が設定されていることを確認します。
 
 ```js
 storageMode: "supabase",

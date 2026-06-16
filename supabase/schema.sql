@@ -6,21 +6,21 @@ create table if not exists public.app_state (
 
 alter table public.app_state enable row level security;
 
-drop policy if exists "app_state_select" on public.app_state;
-drop policy if exists "app_state_insert" on public.app_state;
-drop policy if exists "app_state_update" on public.app_state;
+drop policy if exists "legacy_lily_app_state_select" on public.app_state;
+drop policy if exists "legacy_lily_app_state_insert" on public.app_state;
+drop policy if exists "legacy_lily_app_state_update" on public.app_state;
 
-create policy "app_state_select"
+create policy "legacy_lily_app_state_select"
 on public.app_state
 for select
 using (id = 'legacy-lily-event-manager');
 
-create policy "app_state_insert"
+create policy "legacy_lily_app_state_insert"
 on public.app_state
 for insert
 with check (id = 'legacy-lily-event-manager');
 
-create policy "app_state_update"
+create policy "legacy_lily_app_state_update"
 on public.app_state
 for update
 using (id = 'legacy-lily-event-manager')

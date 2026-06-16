@@ -18,6 +18,7 @@ import {
   configureCore,
   deleteDrinkPlan,
   deleteReservation,
+  deleteReservationRequest,
   deleteRole,
   findReservationBySlot,
   getActiveStaffMembers,
@@ -809,7 +810,7 @@ test('reservation save conflicts protect occupied slots and stale edits', () => 
   const staleEditConflict = getReservationSaveConflict(state, currentEdit);
   assert.equal(staleEditConflict.type, 'stale');
 
-  const deleted = deleteReservation(state, created.reservation.id, '2026-05-03T13:24:00.000Z');
+  const deleted = deleteReservation(state, created.reservation.id, '2026-05-03T13:24:00.000Z', { admin: true });
   assert.equal(deleted.ok, true);
   assert.equal(getReservationSaveConflict(deleted.state, occupiedConflict.reservation), null);
 });
@@ -1029,6 +1030,117 @@ test('reservation request prototype opens on Wednesday at 22:00 for hosts', () =
   assert.equal(getReservationRequestsForEvent(state, event.id).length, 1);
 });
 
+test('host reservation request edits keep assignment immutable and cannot delete', () => {
+  let state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+  const hosts = ensureActiveHosts(state, 3);
+  const created = upsertReservationRequest(
+    state,
+    reservationRequestDraft(event.id, {
+      host_user_id: hosts[0].id,
+      desired_time_slot: TIME_SLOTS[0],
+      princess_name: 'Original Guest',
+      ivan_name: 'Original Ivan',
+      red_count: 1,
+      memo: 'original memo',
+    }),
+    { admin: true, now: '2026-05-03T13:00:00.000Z' },
+  );
+  assert.equal(created.ok, true);
+  state = created.state;
+
+  const hostEdit = upsertReservationRequest(
+    state,
+    reservationRequestDraft(event.id, {
+      id: created.request.id,
+      host_user_id: hosts[1].id,
+      desired_time_slot: TIME_SLOTS[1],
+      princess_name: 'Edited Guest',
+      ivan_name: 'Changed Ivan',
+      purple_count: 2,
+      red_count: 0,
+      tower_count: 1,
+      memo: 'edited memo',
+    }),
+    { admin: false, now: event.reservation_open_at },
+  );
+  assert.equal(hostEdit.ok, true);
+  const edited = getReservationRequestsForEvent(hostEdit.state, event.id)[0];
+  assert.equal(edited.host_user_id, hosts[0].id);
+  assert.equal(edited.desired_time_slot, TIME_SLOTS[0]);
+  assert.equal(edited.ivan_name, 'Original Ivan');
+  assert.equal(edited.princess_name, 'Edited Guest');
+  assert.equal(edited.purple_count, 2);
+  assert.equal(edited.tower_count, 1);
+  assert.equal(edited.memo, 'edited memo');
+
+  const deniedDelete = deleteReservationRequest(hostEdit.state, created.request.id, event.reservation_open_at);
+  assert.equal(deniedDelete.ok, false);
+  assert.equal(getReservationRequestsForEvent(deniedDelete.state, event.id).length, 1);
+
+  const adminDelete = deleteReservationRequest(hostEdit.state, created.request.id, event.reservation_open_at, { admin: true });
+  assert.equal(adminDelete.ok, true);
+  assert.equal(getReservationRequestsForEvent(adminDelete.state, event.id).length, 0);
+});
+
+test('host reservation edits keep slot and assignment immutable and cannot delete', () => {
+  let state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+  const hosts = ensureActiveHosts(state, 3);
+  const created = upsertReservation(
+    state,
+    reservationDraft(event.id, {
+      host_user_id: hosts[0].id,
+      time_slot: TIME_SLOTS[0],
+      seat_type: SEAT_TYPES[0],
+      group_no: '1',
+      princess_name: 'Original Princess',
+      ivan_name: 'Original Ivan',
+      red_count: 1,
+    }),
+    { admin: true, now: '2026-05-03T13:00:00.000Z' },
+  );
+  assert.equal(created.ok, true);
+  state = created.state;
+
+  const hostEdit = upsertReservation(
+    state,
+    reservationDraft(event.id, {
+      id: created.reservation.id,
+      host_user_id: hosts[1].id,
+      time_slot: TIME_SLOTS[1],
+      seat_type: SEAT_TYPES[1],
+      group_no: '2',
+      princess_name: 'Edited Princess',
+      ivan_name: 'Changed Ivan',
+      purple_count: 2,
+      red_count: 0,
+      tower_count: 1,
+      memo: 'edited memo',
+    }),
+    { admin: false, now: event.reservation_open_at },
+  );
+  assert.equal(hostEdit.ok, true);
+  const edited = getReservationsForEvent(hostEdit.state, event.id)[0];
+  assert.equal(edited.host_user_id, hosts[0].id);
+  assert.equal(edited.time_slot, TIME_SLOTS[0]);
+  assert.equal(edited.seat_type, SEAT_TYPES[0]);
+  assert.equal(edited.group_no, '1');
+  assert.equal(edited.ivan_name, 'Original Ivan');
+  assert.equal(edited.princess_name, 'Edited Princess');
+  assert.equal(edited.purple_count, 2);
+  assert.equal(edited.tower_count, 1);
+  assert.equal(edited.memo, 'edited memo');
+
+  const deniedDelete = deleteReservation(hostEdit.state, created.reservation.id, event.reservation_open_at);
+  assert.equal(deniedDelete.ok, false);
+  assert.equal(getReservationsForEvent(deniedDelete.state, event.id).length, 1);
+
+  const adminDelete = deleteReservation(hostEdit.state, created.reservation.id, event.reservation_open_at, { admin: true });
+  assert.equal(adminDelete.ok, true);
+  assert.equal(getReservationsForEvent(adminDelete.state, event.id).length, 0);
+});
+
 test('drink totals include accepted reservation requests separately from drink plans', () => {
   let state = buildDefaultState(new Date(2026, 4, 15, 12));
   const event = activeEvent(state);
@@ -1219,6 +1331,7 @@ test('reservation upsert opens only after the event gate, supports admin overrid
     updated.state,
     updated.reservation.id,
     new Date('2026-05-02T12:00:00+09:00'),
+    { admin: true },
   );
   assert.equal(deleted.ok, true);
   assert.equal(getReservationsForEvent(deleted.state, event.id).length, 0);
@@ -1227,7 +1340,7 @@ test('reservation upsert opens only after the event gate, supports admin overrid
 
   const numericIdState = deepClone(updated.state);
   numericIdState.reservations[0].id = 98765;
-  const deletedNumeric = deleteReservation(numericIdState, '98765', new Date('2026-05-02T12:00:00+09:00'));
+  const deletedNumeric = deleteReservation(numericIdState, '98765', new Date('2026-05-02T12:00:00+09:00'), { admin: true });
   assert.equal(deletedNumeric.ok, true);
   assert.equal(getReservationsForEvent(deletedNumeric.state, event.id).length, 0);
 });

@@ -829,9 +829,25 @@ export function wasReservationChangedAfterEventCutoff(event, reservation) {
 
 export function upsertReservation(state, input, options = {}) {
   const draft = clone(state);
-  const payload = normalizeReservation(input);
+  let payload = normalizeReservation(input);
   const now = options.now ? new Date(options.now) : new Date();
   const stamp = now.toISOString();
+  const existingById = payload.id
+    ? draft.reservations.find((reservation) => String(reservation.id) === String(payload.id) && !reservation.is_deleted)
+    : null;
+  if (existingById && !options.admin) {
+    payload = {
+      ...payload,
+      event_date_id: existingById.event_date_id,
+      time_slot: existingById.time_slot,
+      seat_type: existingById.seat_type,
+      group_no: existingById.group_no,
+      host_user_id: existingById.host_user_id,
+      attribute: existingById.attribute || RESERVATION_ATTRIBUTE,
+      ivan_name: existingById.ivan_name || "",
+      ivan_attribute: existingById.ivan_attribute || IVAN_ATTRIBUTE,
+    };
+  }
   const event = findEvent(draft, payload.event_date_id);
   const errors = validateReservationPayload(draft, payload, options);
   if (!event) errors.push("イベント日が見つかりません。");
@@ -842,9 +858,6 @@ export function upsertReservation(state, input, options = {}) {
   if (!isReservationFilled(payload)) errors.push("保存する予約内容がありません。");
   if (errors.length) return { state, ok: false, errors, warnings: [] };
 
-  const existingById = payload.id
-    ? draft.reservations.find((reservation) => String(reservation.id) === String(payload.id) && !reservation.is_deleted)
-    : null;
   const existingBySlot = findReservationBySlot(
     draft,
     payload.event_date_id,
@@ -885,9 +898,10 @@ export function upsertReservation(state, input, options = {}) {
   };
 }
 
-export function deleteReservation(state, reservationId, now = new Date()) {
+export function deleteReservation(state, reservationId, now = new Date(), options = {}) {
   const draft = clone(state);
   const stamp = new Date(now).toISOString();
+  if (!options.admin) return { state, ok: false, errors: ["予約の削除は運営画面からのみ可能です。"] };
   const reservation = draft.reservations.find((item) => String(item.id) === String(reservationId) && !item.is_deleted);
   if (!reservation) return { state, ok: false, errors: ["削除対象の予約が見つかりません。"] };
   const before = clone(reservation);
@@ -1070,7 +1084,7 @@ export function upsertReservationRequest(state, input, options = {}) {
   const draft = clone(state);
   draft.reservation_requests ||= [];
   const stamp = new Date(options.now || new Date()).toISOString();
-  const payload = normalizeReservationRequest(draft, input);
+  let payload = normalizeReservationRequest(draft, input);
   const event = findEvent(draft, payload.event_date_id);
   const errors = [];
   if (!event) errors.push("イベント日が見つかりません。");
@@ -1079,6 +1093,18 @@ export function upsertReservationRequest(state, input, options = {}) {
     errors.push("この日の予約入力は解放前です。");
   }
   const existing = payload.id ? draft.reservation_requests.find((request) => String(request.id) === String(payload.id) && !request.is_deleted) : null;
+  if (existing && !options.admin) {
+    payload = {
+      ...payload,
+      event_date_id: existing.event_date_id,
+      host_user_id: existing.host_user_id,
+      desired_time_slot: existing.desired_time_slot,
+      no_same_time_double_booking: existing.no_same_time_double_booking,
+      attribute: existing.attribute || RESERVATION_ATTRIBUTE,
+      ivan_name: existing.ivan_name || "",
+      ivan_attribute: existing.ivan_attribute || IVAN_ATTRIBUTE,
+    };
+  }
   const acceptance = getReservationRequestAcceptanceStatus(draft, payload.event_date_id);
   if (!existing && !options.admin && acceptance.closed) {
     errors.push("受付上限に達しているため、予約受付は締め切られています。");
@@ -1132,10 +1158,11 @@ export function upsertReservationRequest(state, input, options = {}) {
   return { state: draft, ok: true, request: after, errors: [] };
 }
 
-export function deleteReservationRequest(state, requestId, now = new Date()) {
+export function deleteReservationRequest(state, requestId, now = new Date(), options = {}) {
   const draft = clone(state);
   draft.reservation_requests ||= [];
   const stamp = new Date(now).toISOString();
+  if (!options.admin) return { state, ok: false, errors: ["予約受付の削除は運営画面からのみ可能です。"] };
   const request = draft.reservation_requests.find((item) => String(item.id) === String(requestId) && !item.is_deleted);
   if (!request) return { state, ok: false, errors: ["削除対象の予約受付が見つかりません。"] };
   const before = clone(request);

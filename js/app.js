@@ -1119,7 +1119,7 @@ function renderReservationRequestPrototype(eventId, { adminMode = false, locked 
   const acceptance = getReservationRequestAcceptanceStatus(state, eventId);
   const requestLocked = locked || (!adminMode && acceptance.closed);
   const drinkPlanLocked = event.status === EVENT_STATUSES[2];
-  const editingRequest = adminMode && view.editingReservationRequestId
+  const editingRequest = view.editingReservationRequestId
     ? requests.find((request) => request.id === view.editingReservationRequestId)
     : null;
   return `
@@ -1132,7 +1132,7 @@ function renderReservationRequestPrototype(eventId, { adminMode = false, locked 
       ${acceptance.closed ? `<div class="notice muted">受付上限 ${acceptance.capacity}件（予約枠${acceptance.reservationCapacity} + 保留枠${acceptance.holdCapacity}）に達しています。新規受付は締切です。</div>` : ""}
       ${adminMode ? renderReservationRequestSettingForm(eventId, setting) : ""}
       ${renderDrinkPlans(eventId, { locked: drinkPlanLocked })}
-      ${renderReservationRequestForm(eventId, setting, requestLocked, editingRequest)}
+      ${renderReservationRequestForm(eventId, setting, requestLocked, editingRequest, adminMode)}
       ${renderReservationRequestSummaryV2(buckets, setting, acceptance)}
       ${renderReservationRequestBucketsV2(buckets, adminMode)}
       ${renderReservationRequestList(requests, adminMode, locked)}
@@ -1179,10 +1179,11 @@ function renderReservationRequestSettingForm(eventId, setting) {
   `;
 }
 
-function renderReservationRequestForm(eventId, setting, locked, editingRequest = null) {
+function renderReservationRequestForm(eventId, setting, locked, editingRequest = null, adminMode = false) {
   const allowedSlots = TIME_SLOTS;
   const editing = editingRequest || {};
   const isEditing = Boolean(editingRequest);
+  const immutableLocked = locked || (isEditing && !adminMode);
   const personOptions = getReservationPersonOptions(editing.host_user_id);
   const desiredSlot = editing.desired_time_slot || allowedSlots[0];
   const attribute = RESERVATION_ATTRIBUTE;
@@ -1192,21 +1193,21 @@ function renderReservationRequestForm(eventId, setting, locked, editingRequest =
       ${isEditing ? `
         <div class="request-editing-notice">
           <strong>受付を編集中</strong>
-          <span>${escapeHtml(getReservationPersonName(editing.host_user_id))} / ${escapeHtml(REQUEST_TIME_SLOT_LABELS[editing.desired_time_slot] || editing.desired_time_slot || "")} / ${formatHistoryDateTime(editing.created_at)}</span>
+          <span>${escapeHtml(getReservationPersonName(editing.host_user_id))} / ${escapeHtml(REQUEST_TIME_SLOT_LABELS[editing.desired_time_slot] || editing.desired_time_slot || "")} / ${formatHistoryDateTime(editing.created_at)}${adminMode ? "" : " / 担当・希望回は変更不可"}</span>
           <button class="ghost-button" data-action="new-reservation-request" type="button">新規入力に戻る</button>
         </div>
       ` : ""}
       <input type="hidden" name="id" value="${escapeAttr(editing.id || "")}">
       <input type="hidden" name="event_date_id" value="${escapeAttr(eventId)}">
       <div class="request-form-row request-host-row">
-        <label><span>担当</span><select name="host_user_id" data-role="reservation-person-select" ${locked ? "disabled" : ""}><option value="">未選択</option>${personOptions.map((person) => option(person.id, person.label, person.id === editing.host_user_id)).join("")}</select></label>
-        <label><span>希望回</span><select name="desired_time_slot" ${locked ? "disabled" : ""}>${allowedSlots.map((slot) => option(slot, REQUEST_TIME_SLOT_LABELS[slot] || slot, slot === desiredSlot)).join("")}</select></label>
+        <label><span>担当</span><select name="host_user_id" data-role="reservation-person-select" ${immutableLocked ? "disabled" : ""}><option value="">未選択</option>${personOptions.map((person) => option(person.id, person.label, person.id === editing.host_user_id)).join("")}</select></label>
+        <label><span>希望回</span><select name="desired_time_slot" ${immutableLocked ? "disabled" : ""}>${allowedSlots.map((slot) => option(slot, REQUEST_TIME_SLOT_LABELS[slot] || slot, slot === desiredSlot)).join("")}</select></label>
       </div>
       <div class="request-form-row request-guest-row">
         <label><span>姫名</span><input name="princess_name" value="${escapeAttr(editing.princess_name || "")}" ${locked ? "disabled" : ""}></label>
-        <label><span>属性</span><select name="attribute" data-role="reservation-attribute-select" ${locked ? "disabled" : ""}>${renderAttributeOptions(attribute, "attribute")}</select></label>
-        <label><span>アイバン名</span><input name="ivan_name" value="${escapeAttr(editing.ivan_name || "")}" ${locked ? "disabled" : ""}></label>
-        <label><span>アイバン属性</span><select name="ivan_attribute" data-role="reservation-attribute-select" ${locked ? "disabled" : ""}>${renderAttributeOptions(ivanAttribute, "ivan_attribute")}</select></label>
+        <label><span>属性</span><select name="attribute" data-role="reservation-attribute-select" ${immutableLocked ? "disabled" : ""}>${renderAttributeOptions(attribute, "attribute")}</select></label>
+        <label><span>アイバン名</span><input name="ivan_name" value="${escapeAttr(editing.ivan_name || "")}" ${immutableLocked ? "disabled" : ""}></label>
+        <label><span>アイバン属性</span><select name="ivan_attribute" data-role="reservation-attribute-select" ${immutableLocked ? "disabled" : ""}>${renderAttributeOptions(ivanAttribute, "ivan_attribute")}</select></label>
       </div>
       <div class="request-form-row request-drink-row">
         <label><span>パープル</span><input name="purple_count" type="number" min="0" step="1" value="${Number(editing.purple_count) || 0}" ${locked ? "disabled" : ""}></label>
@@ -1304,7 +1305,7 @@ function renderRequestCardV2(request, adminMode) {
       <div><strong>${escapeHtml(hostName)}</strong><span>${escapeHtml(REQUEST_TIME_SLOT_LABELS[request.desired_time_slot] || request.desired_time_slot)} / ${escapeHtml(seatType)} / ${formatHistoryDateTime(request.created_at)}</span></div>
       <p>${escapeHtml(formatReservationGuestMeta(request) || "姫名未入力")}</p>
       <p>${escapeHtml([drinks, request.memo].filter(Boolean).join(" / "))}</p>
-      ${adminMode ? renderRequestPlacementActionsV2(request) : ""}
+      ${adminMode ? renderRequestPlacementActionsV2(request) : renderHostRequestActions(request)}
     </article>
   `;
 }
@@ -1317,6 +1318,14 @@ function renderRequestPlacementActionsV2(request) {
       <button class="icon-button save" data-action="request-placement" data-request-id="${escapeAttr(request.id)}" data-placement-status="reserved" type="button">予約枠扱い</button>
       <button class="icon-button danger" data-action="request-placement" data-request-id="${escapeAttr(request.id)}" data-placement-status="hold" type="button">保留扱い</button>
       <button class="icon-button danger" data-action="delete-reservation-request" data-request-id="${escapeAttr(request.id)}" type="button">削除</button>
+    </div>
+  `;
+}
+
+function renderHostRequestActions(request) {
+  return `
+    <div class="request-actions">
+      <button class="icon-button" data-action="edit-reservation-request" data-request-id="${escapeAttr(request.id)}" type="button">編集</button>
     </div>
   `;
 }
@@ -1384,7 +1393,7 @@ function renderRequestCard(request, adminMode) {
       <div><strong>${escapeHtml(hostName)}</strong><span>${escapeHtml(REQUEST_TIME_SLOT_LABELS[request.desired_time_slot] || request.desired_time_slot)} / ${formatHistoryDateTime(request.created_at)}</span></div>
       <p>${escapeHtml(formatReservationGuestMeta(request) || "姫名未入力")}</p>
       <p>${escapeHtml([drinks, request.no_same_time_double_booking ? "同タイム2枠不可" : "", flexibleHint, request.memo].filter(Boolean).join(" / "))}</p>
-      ${adminMode ? renderRequestPlacementActions(request) : ""}
+      ${adminMode ? renderRequestPlacementActions(request) : renderHostRequestActions(request)}
     </article>
   `;
 }
@@ -1437,8 +1446,8 @@ function renderReservationRequestList(requests, adminMode, locked) {
               <td>${escapeHtml([formatRequestDrinks(request), request.memo].filter(Boolean).join(" / "))}</td>
               <td>${escapeHtml(formatPlacementStatus(request.placement_status))}</td>
               <td>
-                ${adminMode ? `<button class="icon-button" data-action="edit-reservation-request" data-request-id="${escapeAttr(request.id)}" type="button">編集</button>` : ""}
-                <button class="icon-button danger" data-action="delete-reservation-request" data-request-id="${escapeAttr(request.id)}" type="button" ${locked && !adminMode ? "disabled" : ""}>削除</button>
+                <button class="icon-button" data-action="edit-reservation-request" data-request-id="${escapeAttr(request.id)}" type="button" ${locked && !adminMode ? "disabled" : ""}>編集</button>
+                ${adminMode ? `<button class="icon-button danger" data-action="delete-reservation-request" data-request-id="${escapeAttr(request.id)}" type="button">削除</button>` : ""}
               </td>
             </tr>
           `).join("")}
@@ -1687,13 +1696,14 @@ function renderReservationRow(reservation, context) {
     tower_count: 0,
     memo: "",
   };
+  const immutableDisabled = context.locked || (data.id && !context.adminMode) ? "disabled" : "";
   const warnings = reservation ? getReservationWarnings(state, reservation) : [];
   const rowClass = warnings.length ? "has-warning" : "";
   return `
     <div class="grid-row slot-row ${rowClass}" data-reservation-id="${escapeAttr(data.id || "")}" data-reservation-updated-at="${escapeAttr(data.updated_at || "")}" data-event-id="${escapeAttr(context.eventId)}" data-time-slot="${escapeAttr(context.timeSlot)}" data-seat-type="${escapeAttr(context.seatType)}" data-group-no="${escapeAttr(context.groupNo)}" role="row">
       <div class="grid-cell fixed" data-label="組数"><strong>${context.groupNo}</strong></div>
       <label class="grid-cell" data-label="担当">
-        <select data-field="host_user_id" data-role="reservation-person-select" ${disabled}>
+        <select data-field="host_user_id" data-role="reservation-person-select" ${immutableDisabled}>
           <option value="">未選択</option>
           ${getReservationPersonOptions(data.host_user_id).map((person) => option(person.id, person.label, person.id === data.host_user_id)).join("")}
         </select>
@@ -1715,7 +1725,7 @@ function renderReservationRow(reservation, context) {
       ${textCell("memo", "メモ", data.memo, disabled)}
       <div class="grid-cell actions" data-label="操作">
         <button class="icon-button save" data-action="save-reservation" type="button" ${disabled}>${data.id ? "更新" : "登録"}</button>
-        <button class="icon-button danger" data-action="delete-reservation" type="button" ${disabled || !data.id ? "disabled" : ""}>削除</button>
+        ${context.adminMode ? `<button class="icon-button danger" data-action="delete-reservation" type="button" ${disabled || !data.id ? "disabled" : ""}>削除</button>` : ""}
       </div>
       ${warnings.length ? `<div class="row-warning">${warnings.map(escapeHtml).join(" / ")}</div>` : ""}
     </div>
@@ -3686,6 +3696,10 @@ function formatReservationConflictMessage(conflict) {
 }
 
 function deleteReservationFromRow(button) {
+  if (view.page !== "admin") {
+    showToast("予約の削除は運営画面からのみ可能です。", "error");
+    return;
+  }
   const row = button.closest(".slot-row");
   const reservation = findReservationBySlot(state, row.dataset.eventId, row.dataset.timeSlot, row.dataset.seatType, row.dataset.groupNo);
   const reservationId = row.dataset.reservationId || reservation?.id || "";
@@ -3693,7 +3707,7 @@ function deleteReservationFromRow(button) {
     showToast("削除する予約がありません。", "error");
     return;
   }
-  const result = deleteReservation(state, reservationId);
+  const result = deleteReservation(state, reservationId, new Date(), { admin: true });
   applyResult(result, "予約を削除しました。");
 }
 
@@ -3710,6 +3724,10 @@ function deleteDrinkPlanFromButton(button) {
 }
 
 function deleteReservationRequestFromButton(button) {
+  if (view.page !== "admin") {
+    showToast("予約受付の削除は運営画面からのみ可能です。", "error");
+    return;
+  }
   const requestId = button.dataset.requestId;
   if (!requestId) {
     showToast("削除する予約受付がありません。", "error");
@@ -3717,7 +3735,7 @@ function deleteReservationRequestFromButton(button) {
   }
   const ok = window.confirm("この予約受付を削除します。続行しますか？");
   if (!ok) return;
-  const result = deleteReservationRequest(state, requestId);
+  const result = deleteReservationRequest(state, requestId, new Date(), { admin: true });
   if (result.ok && view.editingReservationRequestId === requestId) view.editingReservationRequestId = "";
   applyResult(result, "予約受付を削除しました。");
 }

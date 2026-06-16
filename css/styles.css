@@ -3128,3 +3128,263 @@ textarea:focus {
     justify-content: flex-start;
   }
 }
+
+.host-photo-uploader {
+  display: inline-grid;
+  width: 76px;
+  justify-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.host-photo-uploader input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.host-photo-uploader small {
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.host-photo,
+.host-photo.placeholder,
+.staff-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid rgba(214, 181, 109, 0.42);
+  border-radius: 50%;
+  background:
+    linear-gradient(180deg, rgba(221, 235, 255, 0.12), rgba(var(--theme-glow-rgb), 0.12)),
+    rgba(4, 7, 12, 0.76);
+  color: #fff8ea;
+  font-weight: 900;
+  object-fit: cover;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 18px rgba(var(--theme-glow-rgb), 0.16);
+}
+
+.host-photo.sm,
+.host-photo.placeholder.sm {
+  width: 46px;
+  height: 46px;
+  font-size: 18px;
+}
+
+.host-photo.md,
+.host-photo.placeholder.md,
+.staff-avatar {
+  width: 58px;
+  height: 58px;
+  font-size: 22px;
+}
+
+.instance-planner-page {
+  display: grid;
+  gap: 16px;
+}
+
+.instance-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.instance-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(230px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.staff-board {
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+}
+
+.instance-column {
+  display: grid;
+  gap: 12px;
+  min-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.014)),
+    rgba(4, 7, 12, 0.62);
+  padding: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 14px 30px rgba(0, 0, 0, 0.26);
+}
+
+.instance-column.a,
+.instance-column.b {
+  border-color: rgba(var(--theme-glow-rgb), 0.38);
+}
+
+.instance-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.instance-summary span {
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(214, 181, 109, 0.24);
+  border-radius: 10px;
+  background: rgba(8, 17, 29, 0.66);
+  color: #fff8ea;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.instance-summary em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.instance-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.instance-person-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(214, 181, 109, 0.28);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.012)),
+    rgba(8, 17, 29, 0.72);
+  padding: 10px;
+}
+
+.instance-person-card.compact {
+  gap: 8px;
+}
+
+.instance-person-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.instance-person-main div {
+  min-width: 0;
+}
+
+.instance-person-main strong,
+.instance-person-main span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instance-person-main strong {
+  color: #fff8ea;
+  font-size: 15px;
+}
+
+.instance-person-main span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.instance-reservation-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.instance-reservation-list li {
+  border: 1px solid rgba(214, 181, 109, 0.18);
+  border-radius: 8px;
+  background: rgba(4, 7, 12, 0.46);
+  color: var(--muted);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.instance-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.instance-person-card.compact .instance-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.instance-actions .icon-button {
+  min-height: 32px;
+  padding: 0 6px;
+}
+
+.instance-output-grid {
+  grid-template-columns: minmax(320px, 0.78fr) minmax(420px, 1.22fr);
+}
+
+.instance-discord-text {
+  min-height: 430px;
+  white-space: pre-wrap;
+}
+
+.instance-canvas-frame {
+  overflow: auto;
+  border: 1px solid rgba(214, 181, 109, 0.28);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.012)),
+    rgba(4, 7, 12, 0.72);
+  padding: 12px;
+}
+
+#instance-image-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-width: 520px;
+  border-radius: 10px;
+  background: #04070c;
+}
+
+@media (max-width: 1240px) {
+  .instance-board,
+  .staff-board,
+  .instance-output-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .instance-overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .instance-overview-grid,
+  .instance-summary,
+  .instance-actions,
+  .instance-person-card.compact .instance-actions {
+    grid-template-columns: 1fr;
+  }
+
+  #instance-image-canvas {
+    min-width: 420px;
+  }
+}

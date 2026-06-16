@@ -2,6 +2,8 @@ export const ROLES = ["幹部", "ホスト", "体入"];
 export const ATTENDANCE_STATUSES = ["出勤", "欠席", "未定", "体入"];
 export const STAFF_ATTENDANCE_STATUSES = ["出勤", "欠席", "未定"];
 export const EVENT_STATUSES = ["受付中", "終了", "休み"];
+export const INSTANCE_ASSIGNMENT_KEYS = ["unassigned", "free", "a", "b"];
+export const STAFF_INSTANCE_ASSIGNMENT_KEYS = ["unassigned", "a", "b"];
 export const ATTRIBUTES = ["初回", "リピ", "初回指名", "要確認"];
 export const RESERVATION_ATTRIBUTE = "リピ";
 export const IVAN_ATTRIBUTE = "初回";
@@ -224,6 +226,9 @@ export function mergeSharedState(remoteState, localState) {
   merged.reservation_settings = mergeByKey(remote.reservation_settings, local.reservation_settings, (item) => item.event_date_id || item.id);
   merged.reservation_requests = mergeByKey(remote.reservation_requests, local.reservation_requests, (item) => item.id);
   merged.drink_plans = mergeByKey(remote.drink_plans, local.drink_plans, (item) => item.id);
+  merged.instance_assignments = mergeByKey(remote.instance_assignments, local.instance_assignments, (item) => {
+    return item.event_date_id && item.person_type && item.person_id ? `${item.event_date_id}:${item.person_type}:${item.person_id}` : item.id;
+  });
   merged.histories = mergeHistory(remote.histories, local.histories);
   return merged;
 }
@@ -338,6 +343,7 @@ export function buildDefaultState(baseDate = new Date()) {
     reservation_settings: [],
     reservation_requests: [],
     drink_plans: [],
+    instance_assignments: [],
     histories: [],
   };
 }
@@ -362,6 +368,8 @@ function makeUser(input, index, stamp) {
     role: input.role || "ホスト",
     is_active: input.is_active !== false,
     note: input.note || "",
+    photo_data_url: input.photo_data_url || "",
+    photo_name: input.photo_name || "",
     created_at: stamp,
     updated_at: stamp,
   };
@@ -512,6 +520,73 @@ export function getAttendanceSummary(state, eventId) {
     summary[entry.status] = (summary[entry.status] || 0) + 1;
   }
   return summary;
+}
+
+export function getInstanceAssignmentsForEvent(state, eventId) {
+  return (state.instance_assignments || []).filter((assignment) => {
+    return String(assignment.event_date_id) === String(eventId) && !assignment.is_deleted;
+  });
+}
+
+export function getInstanceAssignment(state, eventId, personType, personId) {
+  return getInstanceAssignmentsForEvent(state, eventId).find((assignment) => {
+    return assignment.person_type === personType && String(assignment.person_id) === String(personId);
+  }) || null;
+}
+
+export function normalizeInstanceAssignment(input) {
+  const personType = input.person_type === "staff" ? "staff" : "host";
+  const keys = personType === "staff" ? STAFF_INSTANCE_ASSIGNMENT_KEYS : INSTANCE_ASSIGNMENT_KEYS;
+  const instanceKey = keys.includes(input.instance_key) ? input.instance_key : "unassigned";
+  return {
+    id: input.id || null,
+    event_date_id: input.event_date_id || "",
+    person_type: personType,
+    person_id: input.person_id || "",
+    instance_key: instanceKey,
+    note: input.note || "",
+  };
+}
+
+export function upsertInstanceAssignment(state, input, now = new Date()) {
+  const draft = clone(state);
+  draft.instance_assignments ||= [];
+  const payload = normalizeInstanceAssignment(input);
+  const stamp = new Date(now).toISOString();
+  const errors = [];
+  const event = findEvent(draft, payload.event_date_id);
+  if (!event) errors.push("イベント日が見つかりません。");
+  if (!payload.person_id) errors.push("振り分け対象が見つかりません。");
+  if (payload.person_type === "host" && !findUser(draft, payload.person_id)) errors.push("対象ホストが見つかりません。");
+  if (payload.person_type === "staff" && !findStaffMember(draft, payload.person_id)) errors.push("対象内勤が見つかりません。");
+  if (errors.length) return { state, ok: false, errors };
+
+  const existing = draft.instance_assignments.find((assignment) => {
+    return !assignment.is_deleted
+      && String(assignment.event_date_id) === String(payload.event_date_id)
+      && assignment.person_type === payload.person_type
+      && String(assignment.person_id) === String(payload.person_id);
+  });
+  const before = existing ? clone(existing) : null;
+  const after = {
+    ...(existing || {
+      id: createId("instance"),
+      event_date_id: payload.event_date_id,
+      person_type: payload.person_type,
+      person_id: payload.person_id,
+      created_at: stamp,
+      deleted_at: null,
+      is_deleted: false,
+    }),
+    ...payload,
+    id: existing?.id || payload.id || createId("instance"),
+    updated_at: stamp,
+  };
+  if (existing) Object.assign(existing, after);
+  else draft.instance_assignments.push(after);
+  pushHistory(draft, "instance_assignment", after.id, before, after, stamp, before ? "インスタンス振り分けを更新" : "インスタンス振り分けを登録");
+  touch(draft, stamp);
+  return { state: draft, ok: true, assignment: after, errors: [] };
 }
 
 export function getStaffAttendanceEntry(state, eventId, staffMemberId) {
@@ -1385,6 +1460,8 @@ export function upsertUser(state, input, now = new Date()) {
     role: (input.role || "ホスト").trim() || "ホスト",
     is_active: Boolean(input.is_active),
     note: input.note || "",
+    photo_data_url: input.photo_data_url ?? existing?.photo_data_url ?? "",
+    photo_name: input.photo_name ?? existing?.photo_name ?? "",
     updated_at: stamp,
   };
   if (!after.display_name) return { state, ok: false, errors: ["ホスト名を入力してください。"] };

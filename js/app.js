@@ -43,6 +43,7 @@ import {
   getDrinkPlanTotals,
   getDrinkPlansForEvent,
   getGroupLabels,
+  getInstanceAssignment,
   getLimitStatus,
   getMissingUsers,
   getReservationOpenAt,
@@ -80,6 +81,7 @@ import {
   upsertAttendance,
   upsertDrinkPlan,
   upsertEvent,
+  upsertInstanceAssignment,
   upsertReservation,
   upsertReservationRequest,
   upsertReservationSetting,
@@ -181,6 +183,7 @@ const ADMIN_TAB_ICONS = {
   vacations: "□",
   events: "▧",
   reservations: "▣",
+  instances: "▨",
   archive: "▥",
   totals: "◉",
   discord: "✧",
@@ -206,6 +209,7 @@ const ADMIN_TABS = new Set([
   "vacations",
   "events",
   "reservations",
+  "instances",
   "archive",
   "totals",
   "discord",
@@ -286,6 +290,7 @@ function migrateState(saved) {
     staff_attendance_entries: saved.staff_attendance_entries || [],
     reservation_settings: saved.reservation_settings || [],
     reservation_requests: saved.reservation_requests || [],
+    instance_assignments: saved.instance_assignments || [],
     settings: { ...fresh.settings, ...(saved.settings || {}) },
     meta: { ...fresh.meta, ...(saved.meta || {}) },
   };
@@ -406,7 +411,7 @@ async function initializeSharedState() {
 }
 
 function hasPersistableMigration(before, after) {
-  return ["event_dates", "reservations", "reservation_settings", "reservation_requests", "drink_plans"].some((key) => {
+  return ["event_dates", "reservations", "reservation_settings", "reservation_requests", "drink_plans", "instance_assignments"].some((key) => {
     return JSON.stringify(before[key] || []) !== JSON.stringify(after[key] || []);
   });
 }
@@ -424,6 +429,7 @@ function hasPersistableMerge(before, after) {
     "reservation_settings",
     "reservation_requests",
     "drink_plans",
+    "instance_assignments",
   ].some((key) => {
     return JSON.stringify(before[key] || []) !== JSON.stringify(after[key] || []);
   });
@@ -1738,6 +1744,7 @@ function renderAdminPage() {
           ${adminTabButton("vacations", "長期休暇")}
           ${adminTabButton("events", "イベント日")}
           ${adminTabButton("reservations", "予約管理")}
+          ${adminTabButton("instances", "インス振り分け")}
           ${adminTabButton("archive", "アーカイブ")}
           ${adminTabButton("totals", "シャンパン集計")}
           ${adminTabButton("discord", "Discord文面")}
@@ -1802,6 +1809,7 @@ function renderAdminContent() {
   if (view.adminTab === "vacations") return renderVacationManagement();
   if (view.adminTab === "events") return renderEventManagement();
   if (view.adminTab === "reservations") return renderReservationPage(true);
+  if (view.adminTab === "instances") return renderInstancePlanner();
   if (view.adminTab === "archive") return renderArchive();
   if (view.adminTab === "totals") return renderTotals();
   if (view.adminTab === "discord") return renderDiscordTools();
@@ -2019,10 +2027,11 @@ function renderHostManagementTable(users, emptyText) {
   return `
     <div class="table-wrap">
       <table class="data-table">
-        <thead><tr><th>ホスト名</th><th>読み</th><th>ロール</th><th>状態</th><th>メモ</th><th>操作</th></tr></thead>
+        <thead><tr><th>宣材</th><th>ホスト名</th><th>読み</th><th>ロール</th><th>状態</th><th>メモ</th><th>操作</th></tr></thead>
         <tbody>
           ${users.length ? users.map((user) => `
             <tr>
+              <td>${renderHostPhotoUploader(user)}</td>
               <td>${escapeHtml(user.display_name)}</td>
               <td>${escapeHtml(user.kana || "")}</td>
               <td>${escapeHtml(user.role)}</td>
@@ -2037,11 +2046,356 @@ function renderHostManagementTable(users, emptyText) {
                 </div>
               </td>
             </tr>
-          `).join("") : `<tr><td colspan="6">${escapeHtml(emptyText)}</td></tr>`}
+          `).join("") : `<tr><td colspan="7">${escapeHtml(emptyText)}</td></tr>`}
         </tbody>
       </table>
     </div>
   `;
+}
+
+function renderInstancePlanner() {
+  const model = getInstancePlannerModel(view.eventId);
+  const announcement = buildInstanceDiscordText(model);
+  return `
+    <section class="panel page-panel instance-planner-page">
+      <div class="panel-heading wide-heading">
+        <div>
+          <p class="eyebrow">Instance Assignment</p>
+          <h2>${model.event ? formatDateLabel(model.event.event_date) : "対象日未設定"} インス振り分け</h2>
+        </div>
+        <div class="toolbar compact">
+          <button class="ghost-button" data-action="generate-instance-image" type="button">画像を生成</button>
+          <button class="primary-button" data-action="download-instance-image" type="button">PNG保存</button>
+        </div>
+      </div>
+      ${!model.event ? `<p class="empty">対象日を選択してください。</p>` : `
+        <div class="instance-overview-grid">
+          ${renderInstanceStatCard("未配置ホスト", model.hostGroups.unassigned.length)}
+          ${renderInstanceStatCard("自由行動", model.hostGroups.free.length)}
+          ${renderInstanceStatCard("第1インスタンス", model.hostGroups.a.length)}
+          ${renderInstanceStatCard("第2インスタンス", model.hostGroups.b.length)}
+        </div>
+        <div class="instance-board">
+          ${renderInstanceColumn("unassigned", "未配置ホスト", model.hostGroups.unassigned, model)}
+          ${renderInstanceColumn("free", "自由行動", model.hostGroups.free, model)}
+          ${renderInstanceColumn("a", "第1インスタンス", model.hostGroups.a, model)}
+          ${renderInstanceColumn("b", "第2インスタンス", model.hostGroups.b, model)}
+        </div>
+        <div class="instance-board staff-board">
+          ${renderStaffInstanceColumn("unassigned", "内勤（未振り分け）", model.staffGroups.unassigned)}
+          ${renderStaffInstanceColumn("a", "第1インスタンス 内勤", model.staffGroups.a)}
+          ${renderStaffInstanceColumn("b", "第2インスタンス 内勤", model.staffGroups.b)}
+        </div>
+        ${model.ineligibleHosts.length ? `
+          <section class="mini-panel">
+            <div class="section-title"><h3>振り分け対象外</h3><span class="capacity muted">${model.ineligibleHosts.length}名</span></div>
+            <ul class="name-list">${model.ineligibleHosts.map((row) => `<li>${escapeHtml(row.user.display_name)}<span>${escapeHtml(row.status)}</span></li>`).join("")}</ul>
+          </section>
+        ` : ""}
+        <div class="split instance-output-grid">
+          <section class="mini-panel">
+            <div class="section-title">
+              <h3>Discordアナウンス文</h3>
+              <button class="icon-button" data-action="copy-text" data-source="instance-discord" type="button">コピー</button>
+            </div>
+            <textarea class="copy-text instance-discord-text" data-copy-source="instance-discord" readonly>${escapeHtml(announcement)}</textarea>
+          </section>
+          <section class="mini-panel">
+            <div class="section-title">
+              <h3>画像プレビュー</h3>
+              <span class="capacity ok">1600 x 900</span>
+            </div>
+            <div class="instance-canvas-frame">
+              <canvas id="instance-image-canvas" width="1600" height="900" aria-label="インスタンス振り分け画像"></canvas>
+            </div>
+          </section>
+        </div>
+      `}
+    </section>
+  `;
+}
+
+function renderInstanceStatCard(label, count) {
+  return `<div class="summary-card"><span>${escapeHtml(label)}</span><strong>${count}</strong></div>`;
+}
+
+function renderInstanceColumn(instanceKey, title, hosts, model) {
+  const summary = ["a", "b"].includes(instanceKey) ? renderInstanceReservationSummary(instanceKey, model) : "";
+  return `
+    <section class="instance-column ${instanceKey}">
+      <div class="section-title">
+        <h3>${escapeHtml(title)}</h3>
+        <span class="capacity ${hosts.length ? "ok" : "muted"}">${hosts.length}名</span>
+      </div>
+      ${summary}
+      <div class="instance-card-list">
+        ${hosts.length ? hosts.map((row) => renderInstanceHostCard(row)).join("") : `<p class="empty">まだいません。</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderStaffInstanceColumn(instanceKey, title, staffRows) {
+  return `
+    <section class="instance-column staff ${instanceKey}">
+      <div class="section-title">
+        <h3>${escapeHtml(title)}</h3>
+        <span class="capacity ${staffRows.length ? "ok" : "muted"}">${staffRows.length}名</span>
+      </div>
+      <div class="instance-card-list">
+        ${staffRows.length ? staffRows.map((row) => renderInstanceStaffCard(row)).join("") : `<p class="empty">まだいません。</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderInstanceHostCard(row) {
+  const reservationText = row.reservations.length
+    ? `<ul class="instance-reservation-list">${row.reservations.slice(0, 4).map((item) => `<li>${escapeHtml(formatInstanceReservationItem(item))}</li>`).join("")}</ul>`
+    : `<p class="empty">予約紐づけなし</p>`;
+  return `
+    <article class="instance-person-card">
+      <div class="instance-person-main">
+        ${renderHostPhoto(row.user, "md")}
+        <div>
+          <strong>${escapeHtml(row.user.display_name)}</strong>
+          <span>${escapeHtml(row.status)} / ${escapeHtml(row.user.role || "ホスト")}</span>
+        </div>
+      </div>
+      ${reservationText}
+      <div class="instance-actions">
+        ${renderInstanceAssignButton(row, "unassigned", "未配置")}
+        ${renderInstanceAssignButton(row, "free", "自由")}
+        ${renderInstanceAssignButton(row, "a", "A")}
+        ${renderInstanceAssignButton(row, "b", "B")}
+      </div>
+    </article>
+  `;
+}
+
+function renderInstanceStaffCard(row) {
+  return `
+    <article class="instance-person-card compact">
+      <div class="instance-person-main">
+        <span class="staff-avatar">内</span>
+        <div>
+          <strong>${escapeHtml(row.member.display_name)}</strong>
+          <span>${escapeHtml(row.member.staff_type || "内勤")}</span>
+        </div>
+      </div>
+      <div class="instance-actions">
+        ${renderStaffInstanceAssignButton(row, "unassigned", "未配置")}
+        ${renderStaffInstanceAssignButton(row, "a", "A")}
+        ${renderStaffInstanceAssignButton(row, "b", "B")}
+      </div>
+    </article>
+  `;
+}
+
+function renderInstanceAssignButton(row, instanceKey, label) {
+  return `
+    <button class="icon-button ${row.instanceKey === instanceKey ? "save" : ""}" data-action="instance-assign" data-person-type="host" data-person-id="${escapeAttr(row.user.id)}" data-instance-key="${escapeAttr(instanceKey)}" type="button">
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function renderStaffInstanceAssignButton(row, instanceKey, label) {
+  return `
+    <button class="icon-button ${row.instanceKey === instanceKey ? "save" : ""}" data-action="instance-assign" data-person-type="staff" data-person-id="${escapeAttr(row.member.id)}" data-instance-key="${escapeAttr(instanceKey)}" type="button">
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function renderInstanceReservationSummary(instanceKey, model) {
+  const summary = getInstanceReservationSummary(instanceKey, model);
+  return `
+    <div class="instance-summary">
+      ${TIME_SLOTS.map((slot) => {
+        const item = summary[slot];
+        return `<span>${escapeHtml(slot)} ${item.total}件 <em>通常${item.normal} / アイバン${item.ivan}</em></span>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function getInstancePlannerModel(eventId) {
+  const event = findEvent(state, eventId);
+  const hostRows = [];
+  const ineligibleHosts = [];
+  const staffRows = [];
+  const hostGroups = { unassigned: [], free: [], a: [], b: [] };
+  const staffGroups = { unassigned: [], a: [], b: [] };
+  if (!event) {
+    return { event, hostRows, ineligibleHosts, staffRows, hostGroups, staffGroups, setting: getReservationSetting(state, eventId) };
+  }
+
+  for (const user of getActiveUsers(state)) {
+    const vacation = isOnVacation(state, user.id, event.event_date);
+    const entry = getAttendanceEntry(state, eventId, user.id);
+    const status = vacation ? "長期休暇" : entry?.status || "未入力";
+    const isEligible = status === "出勤" || status === "体入";
+    const assignment = getInstanceAssignment(state, eventId, "host", user.id);
+    const instanceKey = isEligible ? (assignment?.instance_key || "unassigned") : "unassigned";
+    const row = {
+      user,
+      entry,
+      status,
+      isTrial: status === "体入" || user.role === "体入",
+      instanceKey,
+      reservations: getHostInstanceReservations(eventId, user.id),
+    };
+    if (isEligible) {
+      hostRows.push(row);
+      hostGroups[hostGroups[instanceKey] ? instanceKey : "unassigned"].push(row);
+    } else {
+      ineligibleHosts.push(row);
+    }
+  }
+
+  for (const member of getActiveStaffMembers(state)) {
+    const entry = getStaffAttendanceEntry(state, eventId, member.id);
+    if (entry?.status !== "出勤") continue;
+    const assignment = getInstanceAssignment(state, eventId, "staff", member.id);
+    const instanceKey = assignment?.instance_key || "unassigned";
+    const row = { member, entry, instanceKey };
+    staffRows.push(row);
+    staffGroups[staffGroups[instanceKey] ? instanceKey : "unassigned"].push(row);
+  }
+
+  return {
+    event,
+    hostRows,
+    ineligibleHosts,
+    staffRows,
+    hostGroups,
+    staffGroups,
+    setting: getReservationSetting(state, eventId),
+  };
+}
+
+function getHostInstanceReservations(eventId, userId) {
+  const actualReservations = getReservationsForEvent(state, eventId)
+    .filter((reservation) => isReservationFilled(reservation) && reservation.host_user_id === userId)
+    .map((reservation) => ({
+      source: "actual",
+      time_slot: reservation.time_slot,
+      seat_type: reservation.seat_type,
+      guest_name: reservation.princess_name || "",
+      ivan_name: reservation.ivan_name || "",
+      memo: reservation.memo || "",
+      is_ivan: Boolean(reservation.ivan_name || reservation.seat_type === SEAT_TYPES[1]),
+    }));
+  const acceptedRequests = getAcceptedReservationRequestsForEvent(state, eventId)
+    .filter((request) => request.host_user_id === userId)
+    .map((request) => ({
+      source: "request",
+      time_slot: request.desired_time_slot,
+      seat_type: isReservationRequestIvan(request) ? SEAT_TYPES[1] : SEAT_TYPES[0],
+      guest_name: request.princess_name || "",
+      ivan_name: request.ivan_name || "",
+      memo: request.memo || "",
+      is_ivan: isReservationRequestIvan(request),
+    }));
+  return [...actualReservations, ...acceptedRequests].sort((a, b) => {
+    const slot = TIME_SLOTS.indexOf(a.time_slot) - TIME_SLOTS.indexOf(b.time_slot);
+    if (slot) return slot;
+    return String(a.source).localeCompare(String(b.source));
+  });
+}
+
+function formatInstanceReservationItem(item) {
+  const kind = item.source === "request" ? "受付" : "実予約";
+  const guest = item.guest_name || "姫名未入力";
+  const ivan = item.ivan_name ? ` / join ${item.ivan_name}` : "";
+  return `${item.time_slot}${kind}: ${guest}${ivan}`;
+}
+
+function getInstanceReservationSummary(instanceKey, model) {
+  const result = Object.fromEntries(TIME_SLOTS.map((slot) => [slot, { normal: 0, ivan: 0, total: 0 }]));
+  for (const row of model.hostGroups[instanceKey] || []) {
+    for (const item of row.reservations) {
+      const slot = TIME_SLOTS.includes(item.time_slot) ? item.time_slot : TIME_SLOTS[0];
+      if (item.is_ivan) result[slot].ivan += 1;
+      else result[slot].normal += 1;
+      result[slot].total += 1;
+    }
+  }
+  return result;
+}
+
+function buildInstanceDiscordText(model) {
+  if (!model.event) return "";
+  const freeHosts = model.hostGroups.free.map((row) => row.user.display_name);
+  const trialHosts = model.hostRows.filter((row) => row.isTrial).map((row) => row.user.display_name);
+  const unassignedStaff = model.staffGroups.unassigned.map((row) => row.member.display_name);
+  const lines = [
+    `@everyone 【${formatDateLabel(model.event.event_date)}本日の振り分け案内】`,
+    "急だけど出勤したい、の連絡は私宛メンションでここに返信！",
+    "※今日も姫ポイント2倍デー！",
+    "※コールの関係で急遽入れ替える可能性があります。",
+    "",
+    `◆自由行動：${formatNameList(freeHosts)}`,
+    `◆内勤（未振り分け）：${formatNameList(unassignedStaff)}`,
+    `◆体入：${formatNameList(trialHosts)}`,
+    "",
+  ];
+
+  lines.push(...buildInstanceDiscordBlock("第1インスタンス", model.hostGroups.a, model.staffGroups.a, model, "a"));
+  lines.push("");
+  lines.push(...buildInstanceDiscordBlock("第2インスタンス", model.hostGroups.b, model.staffGroups.b, model, "b"));
+  return lines.join("\n").trim();
+}
+
+function buildInstanceDiscordBlock(title, hostRows, staffRows, model, instanceKey) {
+  const summary = getInstanceReservationSummary(instanceKey, model);
+  const staffNames = staffRows.map((row) => row.member.display_name);
+  const lines = [
+    `◆${title}　内勤：${formatNameList(staffNames)}`,
+    ...TIME_SLOTS.map((slot) => {
+      const item = summary[slot];
+      const normalCap = slot === TIME_SLOTS[0] ? model.setting.normal_capacity_front : model.setting.normal_capacity_back;
+      return `${slot}：通常${item.normal}名 / join枠${item.ivan}名 / 合計${item.total}名（通常枠${normalCap} / join枠${model.setting.ivan_capacity}）`;
+    }),
+  ];
+  for (const row of hostRows) {
+    lines.push(`・${row.user.display_name}${formatHostReservationSummaryForDiscord(row.reservations)}`);
+  }
+  if (!hostRows.length) lines.push("・未配置");
+  return lines;
+}
+
+function formatHostReservationSummaryForDiscord(reservations) {
+  if (!reservations.length) return "";
+  const bySlot = TIME_SLOTS.map((slot) => {
+    const items = reservations.filter((item) => item.time_slot === slot);
+    if (!items.length) return "";
+    return `${slot}予約：${items.map((item) => item.guest_name || item.ivan_name || "姫名未入力").join("、")}`;
+  }).filter(Boolean);
+  return bySlot.length ? `（${bySlot.join(" / ")}）` : "";
+}
+
+function formatNameList(names) {
+  return names.length ? names.join("、") : "なし";
+}
+
+function renderHostPhotoUploader(user) {
+  return `
+    <label class="host-photo-uploader" title="宣材写真を登録">
+      <span class="host-photo-thumb">${renderHostPhoto(user, "sm")}</span>
+      <input data-role="host-photo-input" data-user-id="${escapeAttr(user.id)}" type="file" accept="image/*">
+      <small>${user.photo_data_url ? "変更" : "登録"}</small>
+    </label>
+  `;
+}
+
+function renderHostPhoto(user, size = "md") {
+  if (user?.photo_data_url) {
+    return `<img class="host-photo ${size}" src="${escapeAttr(user.photo_data_url)}" alt="${escapeAttr(`${user.display_name} 宣材写真`)}">`;
+  }
+  const initial = String(user?.display_name || "?").trim().slice(0, 1) || "?";
+  return `<span class="host-photo placeholder ${size}">${escapeHtml(initial)}</span>`;
 }
 
 function renderStaffManagement() {
@@ -2844,6 +3198,18 @@ function handleClick(event) {
   if (action === "delete-reservation-request") deleteReservationRequestFromButton(button);
   if (action === "request-placement") setReservationRequestPlacementFromButton(button);
   if (action === "delete-drink-plan") deleteDrinkPlanFromButton(button);
+  if (action === "instance-assign") {
+    saveInstanceAssignmentFromButton(button);
+    return;
+  }
+  if (action === "generate-instance-image") {
+    generateInstanceImage();
+    return;
+  }
+  if (action === "download-instance-image") {
+    downloadInstanceImage();
+    return;
+  }
   if (action === "admin-save-attendance") saveAdminAttendance(button);
   if (action === "admin-save-staff-attendance") saveAdminStaffAttendance(button);
   if (action === "edit-user") {
@@ -3167,6 +3533,11 @@ function handleChange(event) {
     syncReservationAttributeControls(reservationPerson.closest("form") || reservationPerson.closest(".slot-row"));
     return;
   }
+  const hostPhotoInput = event.target.closest("[data-role='host-photo-input']");
+  if (hostPhotoInput) {
+    saveHostPhotoFromInput(hostPhotoInput);
+    return;
+  }
   const eventDateInput = event.target.closest("[data-role='event-date-input']");
   if (eventDateInput) {
     const form = eventDateInput.closest("form");
@@ -3337,6 +3708,270 @@ function saveAdminStaffAttendance(button) {
   applyResult(result, "内勤出勤を保存しました。");
 }
 
+function saveInstanceAssignmentFromButton(button) {
+  const result = upsertInstanceAssignment(state, {
+    event_date_id: view.eventId,
+    person_type: button.dataset.personType,
+    person_id: button.dataset.personId,
+    instance_key: button.dataset.instanceKey,
+  });
+  applyResult(result, "インスタンス振り分けを保存しました。");
+}
+
+async function saveHostPhotoFromInput(input) {
+  const user = findUser(state, input.dataset.userId);
+  const file = input.files?.[0];
+  if (!user || !file) return;
+  if (!file.type.startsWith("image/")) {
+    showToast("画像ファイルを選択してください。", "error");
+    input.value = "";
+    return;
+  }
+  input.disabled = true;
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const resized = await resizeImageDataUrl(dataUrl, 640, 0.86);
+    const result = upsertUser(state, {
+      ...user,
+      photo_data_url: resized,
+      photo_name: file.name,
+    });
+    applyResult(result, "宣材写真を保存しました。");
+  } catch (error) {
+    console.error(error);
+    showToast("宣材写真を読み込めませんでした。", "error");
+  } finally {
+    input.disabled = false;
+    input.value = "";
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function resizeImageDataUrl(dataUrl, maxSize, quality = 0.86) {
+  const image = await loadCanvasImage(dataUrl);
+  const scale = Math.min(1, maxSize / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+  const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+  const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+async function generateInstanceImage() {
+  const canvas = root.querySelector("#instance-image-canvas");
+  if (!canvas) return;
+  await drawInstanceImage(canvas, getInstancePlannerModel(view.eventId));
+  showToast("振り分け画像を生成しました。");
+}
+
+async function downloadInstanceImage() {
+  const canvas = root.querySelector("#instance-image-canvas") || document.createElement("canvas");
+  const model = getInstancePlannerModel(view.eventId);
+  await drawInstanceImage(canvas, model);
+  const event = model.event ? model.event.event_date.replaceAll("-", "") : "instance";
+  const link = document.createElement("a");
+  link.download = `legacy-lily-instance-${event}.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+  showToast("PNGを保存しました。");
+}
+
+async function drawInstanceImage(canvas, model) {
+  canvas.width = 1600;
+  canvas.height = 900;
+  const ctx = canvas.getContext("2d");
+  const imageEntries = await Promise.all(model.hostRows.map(async (row) => {
+    if (!row.user.photo_data_url) return [row.user.id, null];
+    try {
+      return [row.user.id, await loadCanvasImage(row.user.photo_data_url)];
+    } catch {
+      return [row.user.id, null];
+    }
+  }));
+  const imageMap = new Map(imageEntries);
+
+  drawInstanceBackground(ctx, canvas.width, canvas.height);
+  drawInstanceImageHeader(ctx, model);
+  drawInstanceImagePanel(ctx, 60, 166, 705, 656, "第1インスタンス", model.hostGroups.a, model.staffGroups.a, imageMap, model, "a");
+  drawInstanceImagePanel(ctx, 835, 166, 705, 656, "第2インスタンス", model.hostGroups.b, model.staffGroups.b, imageMap, model, "b");
+  drawInstanceFooter(ctx, model);
+}
+
+function loadCanvasImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
+function drawInstanceBackground(ctx, width, height) {
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, "#04070c");
+  gradient.addColorStop(0.48, "#08111d");
+  gradient.addColorStop(1, "#020409");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "rgba(47, 140, 255, 0.14)";
+  ctx.beginPath();
+  ctx.ellipse(220, 60, 430, 170, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(214, 181, 109, 0.56)";
+  ctx.lineWidth = 2;
+  roundRectPath(ctx, 28, 28, width - 56, height - 56, 28);
+  ctx.stroke();
+}
+
+function drawInstanceImageHeader(ctx, model) {
+  ctx.fillStyle = "#d6b56d";
+  ctx.font = "700 24px Georgia, serif";
+  ctx.fillText("LEGACY GROUP", 66, 78);
+  ctx.fillStyle = "#fff8ea";
+  ctx.font = "700 48px Georgia, serif";
+  ctx.fillText("Legacy Lily Instance Assignment", 66, 132);
+  ctx.fillStyle = "#c7bda6";
+  ctx.font = "700 24px sans-serif";
+  ctx.fillText(model.event ? formatDateLabel(model.event.event_date) : "対象日未設定", 1220, 94);
+}
+
+function drawInstanceImagePanel(ctx, x, y, width, height, title, hosts, staffRows, imageMap, model, instanceKey) {
+  roundRectPath(ctx, x, y, width, height, 22);
+  ctx.fillStyle = "rgba(8, 17, 29, 0.82)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(214, 181, 109, 0.42)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#fff4d2";
+  ctx.font = "700 32px Georgia, serif";
+  ctx.fillText(title, x + 28, y + 48);
+  ctx.fillStyle = "#c7bda6";
+  ctx.font = "700 18px sans-serif";
+  const staff = staffRows.map((row) => row.member.display_name).join("、") || "未配置";
+  ctx.fillText(`内勤: ${staff}`, x + 28, y + 82);
+
+  const summary = getInstanceReservationSummary(instanceKey, model);
+  ctx.fillStyle = "rgba(214, 181, 109, 0.14)";
+  roundRectPath(ctx, x + 28, y + 102, width - 56, 58, 14);
+  ctx.fill();
+  ctx.fillStyle = "#d6b56d";
+  ctx.font = "700 18px sans-serif";
+  ctx.fillText(`前半 ${summary[TIME_SLOTS[0]].total}件  通常${summary[TIME_SLOTS[0]].normal} / join${summary[TIME_SLOTS[0]].ivan}`, x + 48, y + 136);
+  ctx.fillText(`後半 ${summary[TIME_SLOTS[1]].total}件  通常${summary[TIME_SLOTS[1]].normal} / join${summary[TIME_SLOTS[1]].ivan}`, x + 360, y + 136);
+
+  const columns = 3;
+  const cardW = (width - 76) / columns;
+  const cardH = 128;
+  hosts.slice(0, 12).forEach((row, index) => {
+    const cx = x + 28 + (index % columns) * (cardW + 10);
+    const cy = y + 184 + Math.floor(index / columns) * (cardH + 12);
+    drawHostImageCard(ctx, cx, cy, cardW, cardH, row, imageMap.get(row.user.id));
+  });
+  if (!hosts.length) {
+    ctx.fillStyle = "#8e836d";
+    ctx.font = "700 22px sans-serif";
+    ctx.fillText("未配置", x + 28, y + 218);
+  }
+}
+
+function drawHostImageCard(ctx, x, y, width, height, row, image) {
+  roundRectPath(ctx, x, y, width, height, 16);
+  ctx.fillStyle = "rgba(4, 7, 12, 0.74)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(214, 181, 109, 0.28)";
+  ctx.stroke();
+  drawCircularHostImage(ctx, x + 46, y + 48, 34, image, row.user.display_name);
+  ctx.fillStyle = "#fff8ea";
+  ctx.font = "700 20px sans-serif";
+  fitCanvasText(ctx, row.user.display_name, x + 92, y + 42, width - 108);
+  ctx.fillStyle = "#c7bda6";
+  ctx.font = "700 14px sans-serif";
+  const reservation = row.reservations[0] ? formatInstanceReservationItem(row.reservations[0]) : "予約なし";
+  fitCanvasText(ctx, reservation, x + 92, y + 68, width - 108);
+  ctx.fillStyle = "#d6b56d";
+  ctx.font = "700 13px sans-serif";
+  ctx.fillText(`${row.status} / ${row.reservations.length}件`, x + 92, y + 94);
+}
+
+function drawCircularHostImage(ctx, x, y, radius, image, name) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.clip();
+  if (image) {
+    const size = Math.min(image.naturalWidth || image.width, image.naturalHeight || image.height);
+    const sx = ((image.naturalWidth || image.width) - size) / 2;
+    const sy = ((image.naturalHeight || image.height) - size) / 2;
+    ctx.drawImage(image, sx, sy, size, size, x - radius, y - radius, radius * 2, radius * 2);
+  } else {
+    ctx.fillStyle = "rgba(47, 140, 255, 0.22)";
+    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    ctx.fillStyle = "#fff8ea";
+    ctx.font = "700 24px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(name || "?").slice(0, 1), x, y);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  }
+  ctx.restore();
+  ctx.strokeStyle = "rgba(214, 181, 109, 0.72)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawInstanceFooter(ctx, model) {
+  const free = model.hostGroups.free.map((row) => row.user.display_name).join("、") || "なし";
+  ctx.fillStyle = "#c7bda6";
+  ctx.font = "700 20px sans-serif";
+  ctx.fillText(`自由行動: ${free}`, 66, 852);
+  ctx.fillStyle = "#d6b56d";
+  ctx.font = "700 18px Georgia, serif";
+  ctx.fillText("Legacy Lily / Legacy Rose ready", 1220, 852);
+}
+
+function roundRectPath(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function fitCanvasText(ctx, text, x, y, maxWidth) {
+  const value = String(text || "");
+  if (ctx.measureText(value).width <= maxWidth) {
+    ctx.fillText(value, x, y);
+    return;
+  }
+  let output = value;
+  while (output.length > 1 && ctx.measureText(`${output}...`).width > maxWidth) {
+    output = output.slice(0, -1);
+  }
+  ctx.fillText(`${output}...`, x, y);
+}
+
 function applyResult(result, successMessage) {
   if (!result.ok) {
     showToast((result.errors || ["保存できませんでした。"]).join(" / "), "error");
@@ -3423,6 +4058,9 @@ function summarizePayload(payload) {
     "normal_capacity_back",
     "ivan_capacity",
     "placement_status",
+    "person_type",
+    "person_id",
+    "instance_key",
     "item_type",
     "count",
     "princess_name",

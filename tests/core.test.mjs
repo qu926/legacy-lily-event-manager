@@ -32,6 +32,7 @@ import {
   getDrinkPlansForEvent,
   getDrinkTotals,
   getGroupLabels,
+  getInstanceAssignment,
   getLimitStatus,
   getMissingStaffMembers,
   getMissingUsers,
@@ -73,6 +74,7 @@ import {
   toLocalDateTimeString,
   upsertAttendance,
   upsertDrinkPlan,
+  upsertInstanceAssignment,
   upsertReservation,
   upsertReservationRequest,
   upsertReservationSetting,
@@ -455,6 +457,42 @@ test('hosts can be disabled without removing historical identity', () => {
   assert.ok(getActiveUsers(enabled.state).some((item) => item.id === user.id));
 });
 
+test('host promotional photos are saved and preserved across edits', () => {
+  const state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const user = getActiveUsers(state)[0];
+  const savedPhoto = upsertUser(
+    state,
+    {
+      ...user,
+      photo_data_url: 'data:image/jpeg;base64,abc123',
+      photo_name: 'profile.jpg',
+      is_active: true,
+    },
+    new Date('2026-05-02T10:00:00+09:00'),
+  );
+
+  assert.equal(savedPhoto.ok, true);
+  assert.equal(savedPhoto.user.photo_data_url, 'data:image/jpeg;base64,abc123');
+  assert.equal(savedPhoto.user.photo_name, 'profile.jpg');
+
+  const edited = upsertUser(
+    savedPhoto.state,
+    {
+      id: user.id,
+      display_name: '改名ホスト',
+      kana: user.kana,
+      role: user.role,
+      is_active: true,
+      note: 'memo',
+    },
+    new Date('2026-05-02T10:05:00+09:00'),
+  );
+  assert.equal(edited.user.photo_data_url, 'data:image/jpeg;base64,abc123');
+
+  const disabled = setUserActive(edited.state, user.id, false, new Date('2026-05-02T10:10:00+09:00'));
+  assert.equal(disabled.state.users.find((item) => item.id === user.id).photo_name, 'profile.jpg');
+});
+
 test('custom roles can be created, assigned, and deleted', () => {
   const state = buildDefaultState(new Date(2026, 4, 15, 12));
   const createdRole = upsertRole(state, { name: '幹部候補', is_active: true }, new Date('2026-05-02T10:00:00+09:00'));
@@ -548,6 +586,42 @@ test('internal staff attendance is managed separately from host attendance', () 
     new Date('2026-05-02T11:00:00+09:00'),
   );
   assert.equal(restResult.ok, false);
+});
+
+test('instance assignments can place hosts and internal staff per event', () => {
+  let state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+  const host = getActiveUsers(state)[0];
+  const createdStaff = upsertStaffMember(
+    state,
+    { display_name: '内勤太郎', kana: 'ないきんたろう', staff_type: '内勤', is_active: true },
+    new Date('2026-05-02T10:00:00+09:00'),
+  );
+  state = createdStaff.state;
+
+  const hostAssigned = upsertInstanceAssignment(
+    state,
+    { event_date_id: event.id, person_type: 'host', person_id: host.id, instance_key: 'a' },
+    new Date('2026-05-02T10:05:00+09:00'),
+  );
+  assert.equal(hostAssigned.ok, true);
+  assert.equal(getInstanceAssignment(hostAssigned.state, event.id, 'host', host.id).instance_key, 'a');
+
+  const hostMoved = upsertInstanceAssignment(
+    hostAssigned.state,
+    { event_date_id: event.id, person_type: 'host', person_id: host.id, instance_key: 'free' },
+    new Date('2026-05-02T10:10:00+09:00'),
+  );
+  assert.equal(hostMoved.ok, true);
+  assert.equal(getInstanceAssignment(hostMoved.state, event.id, 'host', host.id).instance_key, 'free');
+
+  const staffAssigned = upsertInstanceAssignment(
+    hostMoved.state,
+    { event_date_id: event.id, person_type: 'staff', person_id: createdStaff.staffMember.id, instance_key: 'b' },
+    new Date('2026-05-02T10:15:00+09:00'),
+  );
+  assert.equal(staffAssigned.ok, true);
+  assert.equal(getInstanceAssignment(staffAssigned.state, event.id, 'staff', createdStaff.staffMember.id).instance_key, 'b');
 });
 
 test('guest attributes are fixed, ivan attributes are limited, and internal staff cannot be assigned', () => {

@@ -1205,9 +1205,9 @@ function renderReservationRequestForm(eventId, setting, locked, editingRequest =
       </div>
       <div class="request-form-row request-guest-row">
         <label><span>姫名</span><input name="princess_name" value="${escapeAttr(editing.princess_name || "")}" ${locked ? "disabled" : ""}></label>
-        <label><span>属性</span><select name="attribute" data-role="reservation-attribute-select" ${immutableLocked ? "disabled" : ""}>${renderAttributeOptions(attribute, "attribute")}</select></label>
-        <label><span>アイバン名</span><input name="ivan_name" value="${escapeAttr(editing.ivan_name || "")}" ${immutableLocked ? "disabled" : ""}></label>
-        <label><span>アイバン属性</span><select name="ivan_attribute" data-role="reservation-attribute-select" ${immutableLocked ? "disabled" : ""}>${renderAttributeOptions(ivanAttribute, "ivan_attribute")}</select></label>
+        <label><span>属性</span><select name="attribute" data-role="reservation-attribute-select" ${locked ? "disabled" : ""}>${renderAttributeOptions(attribute, "attribute")}</select></label>
+        <label><span>アイバン名</span><input name="ivan_name" value="${escapeAttr(editing.ivan_name || "")}" ${locked ? "disabled" : ""}></label>
+        <label><span>アイバン属性</span><select name="ivan_attribute" data-role="reservation-attribute-select" ${locked ? "disabled" : ""}>${renderAttributeOptions(ivanAttribute, "ivan_attribute")}</select></label>
       </div>
       <div class="request-form-row request-drink-row">
         <label><span>パープル</span><input name="purple_count" type="number" min="0" step="1" value="${Number(editing.purple_count) || 0}" ${locked ? "disabled" : ""}></label>
@@ -1783,7 +1783,6 @@ function renderAdminPage() {
             ${ACTIVE_STORE_THEME.logoPath ? `<img src="${escapeAttr(ACTIVE_STORE_THEME.logoPath)}" alt="${escapeAttr(`${ACTIVE_STORE_THEME.name} ロゴ`)}">` : ""}
             <div>
               <strong>${escapeHtml(ACTIVE_STORE_THEME.name)}</strong>
-              <span>${escapeHtml(ACTIVE_STORE_THEME.subLabel)}</span>
             </div>
           </div>
           <p>LEGACY GROUP</p>

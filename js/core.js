@@ -843,9 +843,6 @@ export function upsertReservation(state, input, options = {}) {
       seat_type: existingById.seat_type,
       group_no: existingById.group_no,
       host_user_id: existingById.host_user_id,
-      attribute: existingById.attribute || RESERVATION_ATTRIBUTE,
-      ivan_name: existingById.ivan_name || "",
-      ivan_attribute: existingById.ivan_attribute || IVAN_ATTRIBUTE,
     };
   }
   const event = findEvent(draft, payload.event_date_id);
@@ -1100,9 +1097,6 @@ export function upsertReservationRequest(state, input, options = {}) {
       host_user_id: existing.host_user_id,
       desired_time_slot: existing.desired_time_slot,
       no_same_time_double_booking: existing.no_same_time_double_booking,
-      attribute: existing.attribute || RESERVATION_ATTRIBUTE,
-      ivan_name: existing.ivan_name || "",
-      ivan_attribute: existing.ivan_attribute || IVAN_ATTRIBUTE,
     };
   }
   const acceptance = getReservationRequestAcceptanceStatus(draft, payload.event_date_id);

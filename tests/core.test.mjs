@@ -1041,6 +1041,7 @@ test('host reservation request edits keep assignment immutable and cannot delete
       desired_time_slot: TIME_SLOTS[0],
       princess_name: 'Original Guest',
       ivan_name: 'Original Ivan',
+      ivan_attribute: 'リピ',
       red_count: 1,
       memo: 'original memo',
     }),
@@ -1057,6 +1058,7 @@ test('host reservation request edits keep assignment immutable and cannot delete
       desired_time_slot: TIME_SLOTS[1],
       princess_name: 'Edited Guest',
       ivan_name: 'Changed Ivan',
+      ivan_attribute: '初回',
       purple_count: 2,
       red_count: 0,
       tower_count: 1,
@@ -1068,7 +1070,8 @@ test('host reservation request edits keep assignment immutable and cannot delete
   const edited = getReservationRequestsForEvent(hostEdit.state, event.id)[0];
   assert.equal(edited.host_user_id, hosts[0].id);
   assert.equal(edited.desired_time_slot, TIME_SLOTS[0]);
-  assert.equal(edited.ivan_name, 'Original Ivan');
+  assert.equal(edited.ivan_name, 'Changed Ivan');
+  assert.equal(edited.ivan_attribute, '初回');
   assert.equal(edited.princess_name, 'Edited Guest');
   assert.equal(edited.purple_count, 2);
   assert.equal(edited.tower_count, 1);
@@ -1096,6 +1099,7 @@ test('host reservation edits keep slot and assignment immutable and cannot delet
       group_no: '1',
       princess_name: 'Original Princess',
       ivan_name: 'Original Ivan',
+      ivan_attribute: 'リピ',
       red_count: 1,
     }),
     { admin: true, now: '2026-05-03T13:00:00.000Z' },
@@ -1113,6 +1117,7 @@ test('host reservation edits keep slot and assignment immutable and cannot delet
       group_no: '2',
       princess_name: 'Edited Princess',
       ivan_name: 'Changed Ivan',
+      ivan_attribute: '初回',
       purple_count: 2,
       red_count: 0,
       tower_count: 1,
@@ -1126,7 +1131,8 @@ test('host reservation edits keep slot and assignment immutable and cannot delet
   assert.equal(edited.time_slot, TIME_SLOTS[0]);
   assert.equal(edited.seat_type, SEAT_TYPES[0]);
   assert.equal(edited.group_no, '1');
-  assert.equal(edited.ivan_name, 'Original Ivan');
+  assert.equal(edited.ivan_name, 'Changed Ivan');
+  assert.equal(edited.ivan_attribute, '初回');
   assert.equal(edited.princess_name, 'Edited Princess');
   assert.equal(edited.purple_count, 2);
   assert.equal(edited.tower_count, 1);

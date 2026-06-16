@@ -174,6 +174,8 @@ const NAV_ICONS = {
   admin: "◎",
 };
 const ADMIN_TAB_ICONS = {
+  sales: "◇",
+  attendanceGroup: "◈",
   dashboard: "◇",
   attendance: "◈",
   staffAttendance: "◎",
@@ -189,6 +191,27 @@ const ADMIN_TAB_ICONS = {
   discord: "✧",
   histories: "≡",
   data: "▦",
+};
+const ADMIN_NAV_GROUPS = {
+  sales: {
+    label: "営業管理",
+    detail: "3メニュー",
+    defaultTab: "dashboard",
+    items: [
+      ["dashboard", "運営トップ"],
+      ["instances", "インス振り分け"],
+      ["reservations", "予約管理"],
+    ],
+  },
+  attendanceGroup: {
+    label: "勤怠管理",
+    detail: "2メニュー",
+    defaultTab: "attendance",
+    items: [
+      ["attendance", "ホスト勤怠"],
+      ["staffAttendance", "内勤勤怠"],
+    ],
+  },
 };
 
 configureCore(APP_CONFIG.core);
@@ -1735,19 +1758,14 @@ function renderAdminPage() {
           </select>
         </label>
         <div class="side-nav">
-          ${adminTabButton("dashboard", "運営トップ")}
-          ${adminTabButton("attendance", "ホスト勤怠")}
-          ${adminTabButton("staffAttendance", "内勤勤怠")}
-          ${adminTabButton("missing", "未入力者")}
+          ${adminGroupButton("sales")}
+          ${adminGroupButton("attendanceGroup")}
+          ${adminTabButton("events", "イベント日")}
           ${adminTabButton("hosts", "ホスト一覧")}
           ${adminTabButton("staff", "内勤一覧")}
           ${adminTabButton("vacations", "長期休暇")}
-          ${adminTabButton("events", "イベント日")}
-          ${adminTabButton("reservations", "予約管理")}
-          ${adminTabButton("instances", "インス振り分け")}
           ${adminTabButton("archive", "アーカイブ")}
           ${adminTabButton("totals", "シャンパン集計")}
-          ${adminTabButton("discord", "Discord文面")}
           ${adminTabButton("histories", "変更履歴")}
           ${adminTabButton("data", "データ")}
         </div>
@@ -1790,6 +1808,21 @@ function renderAdminLogin() {
   `;
 }
 
+function adminGroupButton(groupKey) {
+  const group = ADMIN_NAV_GROUPS[groupKey];
+  const active = group.items.some(([tab]) => view.adminTab === tab);
+  const icon = ADMIN_TAB_ICONS[groupKey] || "□";
+  return `
+    <button class="side-button side-group-button ${active ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(group.defaultTab)}" type="button">
+      <span class="side-icon" aria-hidden="true">${icon}</span>
+      <span class="side-button-label">
+        <strong>${escapeHtml(group.label)}</strong>
+        <small>${escapeHtml(group.detail)}</small>
+      </span>
+    </button>
+  `;
+}
+
 function adminTabButton(tab, label) {
   const icon = ADMIN_TAB_ICONS[tab] || "□";
   return `
@@ -1801,6 +1834,13 @@ function adminTabButton(tab, label) {
 }
 
 function renderAdminContent() {
+  const groupKey = getAdminGroupKeyForTab(view.adminTab);
+  const content = renderAdminContentBody();
+  if (!groupKey) return content;
+  return `${renderAdminSectionTabs(groupKey)}${content}`;
+}
+
+function renderAdminContentBody() {
   if (view.adminTab === "attendance") return renderAdminAttendance();
   if (view.adminTab === "staffAttendance") return renderAdminStaffAttendance();
   if (view.adminTab === "missing") return renderAdminMissing();
@@ -1816,6 +1856,29 @@ function renderAdminContent() {
   if (view.adminTab === "histories") return renderHistories();
   if (view.adminTab === "data") return renderDataTools();
   return renderAdminDashboard();
+}
+
+function getAdminGroupKeyForTab(tab) {
+  return Object.entries(ADMIN_NAV_GROUPS).find(([, group]) => group.items.some(([itemTab]) => itemTab === tab))?.[0] || "";
+}
+
+function renderAdminSectionTabs(groupKey) {
+  const group = ADMIN_NAV_GROUPS[groupKey];
+  return `
+    <nav class="admin-section-tabs panel" aria-label="${escapeAttr(group.label)}">
+      <div>
+        <p class="eyebrow">${escapeHtml(group.label)}</p>
+        <h2>${escapeHtml(group.items.find(([tab]) => tab === view.adminTab)?.[1] || group.label)}</h2>
+      </div>
+      <div class="tab-switch admin-tab-switch">
+        ${group.items.map(([tab, label]) => `
+          <button class="tab-button ${view.adminTab === tab ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(tab)}" type="button">
+            ${escapeHtml(label)}
+          </button>
+        `).join("")}
+      </div>
+    </nav>
+  `;
 }
 
 function renderAdminDashboard() {

@@ -139,9 +139,58 @@ const APP_EYEBROW = String(APP_CONFIG.eyebrow || BRAND_NAME);
 const LOGO_PATH = String(APP_CONFIG.logoPath || "").trim();
 const LOGO_ALT = String(APP_CONFIG.logoAlt || `${BRAND_NAME} ロゴ`);
 const STATE_ROW_ID = String(APP_CONFIG.stateRowId || APP_ID);
+const STORE_THEMES = {
+  lily: {
+    key: "lily",
+    label: "LILY",
+    name: "Legacy Lily",
+    title: BRAND_NAME,
+    subLabel: "大阪・ミナミ",
+    motif: "Lily",
+    statusLabel: "active",
+    logoPath: LOGO_PATH,
+  },
+  rose: {
+    key: "rose",
+    label: "ROSE",
+    name: "Legacy Rose",
+    title: "Legacy Rose",
+    subLabel: "Coming Soon",
+    motif: "Rose",
+    statusLabel: "coming soon",
+    logoPath: "",
+  },
+};
+const requestedStoreTheme = String(APP_CONFIG.storeTheme || "lily").toLowerCase();
+const STORE_THEME_KEY = STORE_THEMES[requestedStoreTheme] ? requestedStoreTheme : "lily";
+const ACTIVE_STORE_THEME = STORE_THEMES[STORE_THEME_KEY];
+const NAV_ICONS = {
+  attendance: "◇",
+  staffAttendance: "◈",
+  attendanceList: "▤",
+  reservation: "▣",
+  admin: "◎",
+};
+const ADMIN_TAB_ICONS = {
+  dashboard: "◇",
+  attendance: "◈",
+  staffAttendance: "◎",
+  missing: "△",
+  hosts: "♙",
+  staff: "♢",
+  vacations: "□",
+  events: "▧",
+  reservations: "▣",
+  archive: "▥",
+  totals: "◉",
+  discord: "✧",
+  histories: "≡",
+  data: "▦",
+};
 
 configureCore(APP_CONFIG.core);
 document.title = APP_TITLE;
+document.documentElement.dataset.storeTheme = ACTIVE_STORE_THEME.key;
 
 const root = document.querySelector("#app");
 const toastRoot = document.querySelector("#toast");
@@ -603,8 +652,22 @@ function render() {
         <div class="brand-lockup" aria-label="${escapeAttr(`${BRAND_NAME} ${APP_TITLE}`)}">
           ${LOGO_PATH ? `<img class="brand-mark" src="${escapeAttr(LOGO_PATH)}" alt="${escapeAttr(LOGO_ALT)}">` : ""}
           <div>
+            <p class="brand-name">LEGACY GROUP</p>
             <p class="eyebrow">${escapeHtml(APP_EYEBROW)}</p>
-            <h1>${escapeHtml(APP_TITLE)}</h1>
+          </div>
+        </div>
+        <div class="header-title">
+          <h1>${escapeHtml(APP_TITLE)}</h1>
+          <p>ホストクラブ運営を、美しく、スマートに。</p>
+        </div>
+        <div class="header-tools">
+          ${renderStoreThemeSwitch()}
+          <div class="admin-identity" aria-label="管理者情報">
+            <span class="admin-avatar">◎</span>
+            <span>
+              <strong>ADMIN</strong>
+              <small>システム管理者</small>
+            </span>
           </div>
         </div>
         <nav class="top-nav" aria-label="主要画面">
@@ -620,6 +683,36 @@ function render() {
         ${renderCurrentPage()}
       </main>
     </div>
+  `;
+}
+
+function renderStoreThemeSwitch() {
+  return `
+    <div class="store-switch" aria-label="STORE / THEME">
+      <p>STORE / THEME</p>
+      <div class="store-switch-options">
+        ${renderStoreThemeTile(STORE_THEMES.lily)}
+        ${renderStoreThemeTile(STORE_THEMES.rose)}
+      </div>
+    </div>
+  `;
+}
+
+function renderStoreThemeTile(theme) {
+  const isActive = theme.key === ACTIVE_STORE_THEME.key;
+  const isDisabled = theme.key === "rose" && !isActive;
+  const motif = theme.logoPath
+    ? `<img src="${escapeAttr(theme.logoPath)}" alt="${escapeAttr(`${theme.name} ロゴ`)}">`
+    : `<span class="store-theme-emblem">${theme.key === "rose" ? "R" : "L"}</span>`;
+  return `
+    <button class="store-theme-tile ${isActive ? "is-active" : ""} ${isDisabled ? "is-disabled" : ""}" type="button" ${isDisabled ? "disabled" : ""} aria-pressed="${isActive ? "true" : "false"}">
+      ${motif}
+      <span>
+        <strong>${escapeHtml(theme.label)}</strong>
+        <small>${escapeHtml(theme.name)}</small>
+        <em>${escapeHtml(theme.statusLabel)}</em>
+      </span>
+    </button>
   `;
 }
 
@@ -647,7 +740,13 @@ function renderSiteLogin() {
 }
 
 function navButton(page, label) {
-  return `<button class="nav-button ${view.page === page ? "is-active" : ""}" data-action="navigate" data-page="${page}" type="button">${label}</button>`;
+  const icon = NAV_ICONS[page] || "□";
+  return `
+    <button class="nav-button ${view.page === page ? "is-active" : ""}" data-action="navigate" data-page="${escapeAttr(page)}" type="button">
+      <span class="nav-icon" aria-hidden="true">${icon}</span>
+      <span>${escapeHtml(label)}</span>
+    </button>
+  `;
 }
 
 function renderCurrentPage() {
@@ -1616,15 +1715,19 @@ function renderAdminPage() {
   return `
     <section class="admin-layout">
       <aside class="admin-sidebar panel">
-        <div class="panel-heading">
+        <div class="admin-sidebar-head">
           <div>
-            <p class="eyebrow">Admin</p>
+            <p class="eyebrow">Operations</p>
             <h2>運営画面</h2>
           </div>
+          <span class="sidebar-crest">LG</span>
         </div>
-        <select data-role="event-select" aria-label="対象日">
-          ${renderEventOptions(view.eventId)}
-        </select>
+        <label class="sidebar-event-select">
+          <span>対象日</span>
+          <select data-role="event-select" aria-label="対象日">
+            ${renderEventOptions(view.eventId)}
+          </select>
+        </label>
         <div class="side-nav">
           ${adminTabButton("dashboard", "運営トップ")}
           ${adminTabButton("attendance", "ホスト勤怠")}
@@ -1640,6 +1743,16 @@ function renderAdminPage() {
           ${adminTabButton("discord", "Discord文面")}
           ${adminTabButton("histories", "変更履歴")}
           ${adminTabButton("data", "データ")}
+        </div>
+        <div class="sidebar-store-card">
+          <div class="sidebar-store-lockup">
+            ${ACTIVE_STORE_THEME.logoPath ? `<img src="${escapeAttr(ACTIVE_STORE_THEME.logoPath)}" alt="${escapeAttr(`${ACTIVE_STORE_THEME.name} ロゴ`)}">` : ""}
+            <div>
+              <strong>${escapeHtml(ACTIVE_STORE_THEME.name)}</strong>
+              <span>${escapeHtml(ACTIVE_STORE_THEME.subLabel)}</span>
+            </div>
+          </div>
+          <p>LEGACY GROUP</p>
         </div>
         <button class="ghost-button" data-action="admin-logout" type="button">ログアウト</button>
       </aside>
@@ -1671,7 +1784,13 @@ function renderAdminLogin() {
 }
 
 function adminTabButton(tab, label) {
-  return `<button class="side-button ${view.adminTab === tab ? "is-active" : ""}" data-action="admin-tab" data-tab="${tab}" type="button">${label}</button>`;
+  const icon = ADMIN_TAB_ICONS[tab] || "□";
+  return `
+    <button class="side-button ${view.adminTab === tab ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(tab)}" type="button">
+      <span class="side-icon" aria-hidden="true">${icon}</span>
+      <span>${escapeHtml(label)}</span>
+    </button>
+  `;
 }
 
 function renderAdminContent() {

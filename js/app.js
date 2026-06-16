@@ -195,12 +195,13 @@ const ADMIN_TAB_ICONS = {
 const ADMIN_NAV_GROUPS = {
   sales: {
     label: "営業管理",
-    detail: "3メニュー",
+    detail: "4メニュー",
     defaultTab: "dashboard",
     items: [
       ["dashboard", "運営トップ"],
       ["instances", "インス振り分け"],
       ["reservations", "予約管理"],
+      ["totals", "シャンパン集計"],
     ],
   },
   attendanceGroup: {
@@ -1759,13 +1760,11 @@ function renderAdminPage() {
         </label>
         <div class="side-nav">
           ${adminGroupButton("sales")}
-          ${adminGroupButton("attendanceGroup")}
           ${adminTabButton("events", "イベント日")}
           ${adminTabButton("hosts", "ホスト一覧")}
           ${adminTabButton("staff", "内勤一覧")}
           ${adminTabButton("vacations", "長期休暇")}
           ${adminTabButton("archive", "アーカイブ")}
-          ${adminTabButton("totals", "シャンパン集計")}
           ${adminTabButton("histories", "変更履歴")}
           ${adminTabButton("data", "データ")}
         </div>

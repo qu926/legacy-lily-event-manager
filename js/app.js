@@ -2159,7 +2159,8 @@ function renderInstancePlanner() {
         </div>
         ${model.ineligibleHosts.length ? `
           <section class="mini-panel">
-            <div class="section-title"><h3>振り分け対象外</h3><span class="capacity muted">${model.ineligibleHosts.length}名</span></div>
+            <div class="section-title"><h3>欠席・休暇・未入力</h3><span class="capacity muted">${model.ineligibleHosts.length}名</span></div>
+            <p class="empty">予約なしでも、勤怠が出勤または体入なら上の未配置ホストに表示されます。</p>
             <ul class="name-list">${model.ineligibleHosts.map((row) => `<li>${escapeHtml(row.user.display_name)}<span>${escapeHtml(row.status)}</span></li>`).join("")}</ul>
           </section>
         ` : ""}

@@ -2135,8 +2135,10 @@ function renderInstancePlanner() {
           <h2>${model.event ? formatDateLabel(model.event.event_date) : "対象日未設定"} インス振り分け</h2>
         </div>
         <div class="toolbar compact">
-          <button class="ghost-button" data-action="generate-instance-image" type="button">画像を生成</button>
-          <button class="primary-button" data-action="download-instance-image" type="button">PNG保存</button>
+          <button class="ghost-button" data-action="generate-instance-image" type="button"${model.event ? "" : " disabled"}>画像を生成</button>
+          <button class="ghost-button" data-action="download-instance-image" data-instance-key="a" type="button"${model.event ? "" : " disabled"}>第1PNG保存</button>
+          <button class="ghost-button" data-action="download-instance-image" data-instance-key="b" type="button"${model.event ? "" : " disabled"}>第2PNG保存</button>
+          <button class="primary-button" data-action="download-instance-images" type="button"${model.event ? "" : " disabled"}>2枚ZIP保存</button>
         </div>
       </div>
       ${!model.event ? `<p class="empty">対象日を選択してください。</p>` : `
@@ -2175,10 +2177,21 @@ function renderInstancePlanner() {
           <section class="mini-panel">
             <div class="section-title">
               <h3>画像プレビュー</h3>
-              <span class="capacity ok">1600 x 900</span>
+              <span class="capacity ok">各 1600 x 900</span>
             </div>
-            <div class="instance-canvas-frame">
-              <canvas id="instance-image-canvas" width="1600" height="900" aria-label="インスタンス振り分け画像"></canvas>
+            <div class="instance-preview-grid">
+              <div class="instance-canvas-block">
+                <div class="instance-canvas-title"><strong>第1インスタンス</strong><span>${model.hostGroups.a.length}名</span></div>
+                <div class="instance-canvas-frame">
+                  <canvas id="instance-image-canvas-a" class="instance-image-canvas" width="1600" height="900" aria-label="第1インスタンス振り分け画像"></canvas>
+                </div>
+              </div>
+              <div class="instance-canvas-block">
+                <div class="instance-canvas-title"><strong>第2インスタンス</strong><span>${model.hostGroups.b.length}名</span></div>
+                <div class="instance-canvas-frame">
+                  <canvas id="instance-image-canvas-b" class="instance-image-canvas" width="1600" height="900" aria-label="第2インスタンス振り分け画像"></canvas>
+                </div>
+              </div>
             </div>
           </section>
         </div>
@@ -3275,11 +3288,15 @@ function handleClick(event) {
     return;
   }
   if (action === "generate-instance-image") {
-    generateInstanceImage();
+    generateInstanceImage().catch(handleInstanceImageError);
     return;
   }
   if (action === "download-instance-image") {
-    downloadInstanceImage();
+    downloadInstanceImage(button.dataset.instanceKey || "a").catch(handleInstanceImageError);
+    return;
+  }
+  if (action === "download-instance-images") {
+    downloadAllInstanceImages().catch(handleInstanceImageError);
     return;
   }
   if (action === "admin-save-attendance") saveAdminAttendance(button);
@@ -3849,29 +3866,225 @@ async function resizeImageDataUrl(dataUrl, maxSize, quality = 0.86) {
 }
 
 async function generateInstanceImage() {
-  const canvas = root.querySelector("#instance-image-canvas");
-  if (!canvas) return;
-  await drawInstanceImage(canvas, getInstancePlannerModel(view.eventId));
-  showToast("振り分け画像を生成しました。");
-}
-
-async function downloadInstanceImage() {
-  const canvas = root.querySelector("#instance-image-canvas") || document.createElement("canvas");
   const model = getInstancePlannerModel(view.eventId);
-  await drawInstanceImage(canvas, model);
-  const event = model.event ? model.event.event_date.replaceAll("-", "") : "instance";
-  const link = document.createElement("a");
-  link.download = `legacy-lily-instance-${event}.png`;
-  link.href = canvas.toDataURL("image/png");
-  link.click();
-  showToast("PNGを保存しました。");
+  if (!model.event) {
+    showToast("対象日を選択してください。", "error");
+    return;
+  }
+  const targets = [
+    { key: "a", canvas: root.querySelector("#instance-image-canvas-a") },
+    { key: "b", canvas: root.querySelector("#instance-image-canvas-b") },
+  ].filter((target) => target.canvas);
+  if (!targets.length) {
+    showToast("画像プレビューが見つかりません。", "error");
+    return;
+  }
+  await Promise.all(targets.map((target) => drawInstanceImage(target.canvas, model, target.key)));
+  showToast("インスタンス別画像を生成しました。");
 }
 
-async function drawInstanceImage(canvas, model) {
+async function downloadInstanceImage(instanceKey = "a", options = {}) {
+  const config = getInstanceImageConfig(instanceKey);
+  const canvas = document.createElement("canvas");
+  const model = getInstancePlannerModel(view.eventId);
+  if (!model.event) {
+    if (!options.silent) showToast("対象日を選択してください。", "error");
+    return null;
+  }
+  await drawInstanceImage(canvas, model, config.key);
+  downloadBlob(await canvasToPngBlob(canvas), buildInstanceImageFileName(model, config.key));
+  if (!options.silent) showToast(`${config.title}のPNGを保存しました。`);
+  return canvas;
+}
+
+async function downloadAllInstanceImages() {
+  const model = getInstancePlannerModel(view.eventId);
+  if (!model.event) {
+    showToast("対象日を選択してください。", "error");
+    return;
+  }
+  const files = await Promise.all(["a", "b"].map(async (instanceKey) => {
+    const canvas = document.createElement("canvas");
+    await drawInstanceImage(canvas, model, instanceKey);
+    return {
+      name: buildInstanceImageFileName(model, instanceKey),
+      bytes: await canvasToPngBytes(canvas),
+    };
+  }));
+  downloadBlob(new Blob([createStoredZip(files)], { type: "application/zip" }), buildInstanceZipFileName(model));
+  showToast("第1・第2インスタンスのZIPを保存しました。");
+}
+
+function downloadBlob(blob, fileName) {
+  const link = document.createElement("a");
+  link.download = fileName;
+  link.href = URL.createObjectURL(blob);
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Canvas PNG export failed"));
+      }
+    }, "image/png");
+  });
+}
+
+async function canvasToPngBytes(canvas) {
+  return new Uint8Array(await (await canvasToPngBlob(canvas)).arrayBuffer());
+}
+
+function handleInstanceImageError(error) {
+  console.error(error);
+  showToast("画像生成に失敗しました。宣材写真を確認してください。", "error");
+}
+
+function getInstanceImageConfig(instanceKey) {
+  const key = instanceKey === "b" ? "b" : "a";
+  return {
+    key,
+    title: key === "a" ? "第1インスタンス" : "第2インスタンス",
+    suffix: key === "a" ? "instance1" : "instance2",
+  };
+}
+
+function buildInstanceImageFileName(model, instanceKey) {
+  const config = getInstanceImageConfig(instanceKey);
+  const event = model.event ? model.event.event_date.replaceAll("-", "") : "instance";
+  return `legacy-lily-${config.suffix}-${event}.png`;
+}
+
+function buildInstanceZipFileName(model) {
+  const event = model.event ? model.event.event_date.replaceAll("-", "") : "instance";
+  return `legacy-lily-instances-${event}.zip`;
+}
+
+function createStoredZip(files) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  const { time, date } = getDosDateTime(new Date());
+  let offset = 0;
+
+  files.forEach((file) => {
+    const nameBytes = encoder.encode(file.name);
+    const crc = crc32(file.bytes);
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    const localView = new DataView(localHeader.buffer);
+    writeUint32(localView, 0, 0x04034b50);
+    writeUint16(localView, 4, 20);
+    writeUint16(localView, 6, 0x0800);
+    writeUint16(localView, 8, 0);
+    writeUint16(localView, 10, time);
+    writeUint16(localView, 12, date);
+    writeUint32(localView, 14, crc);
+    writeUint32(localView, 18, file.bytes.length);
+    writeUint32(localView, 22, file.bytes.length);
+    writeUint16(localView, 26, nameBytes.length);
+    writeUint16(localView, 28, 0);
+    localHeader.set(nameBytes, 30);
+    localParts.push(localHeader, file.bytes);
+
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    writeUint32(centralView, 0, 0x02014b50);
+    writeUint16(centralView, 4, 20);
+    writeUint16(centralView, 6, 20);
+    writeUint16(centralView, 8, 0x0800);
+    writeUint16(centralView, 10, 0);
+    writeUint16(centralView, 12, time);
+    writeUint16(centralView, 14, date);
+    writeUint32(centralView, 16, crc);
+    writeUint32(centralView, 20, file.bytes.length);
+    writeUint32(centralView, 24, file.bytes.length);
+    writeUint16(centralView, 28, nameBytes.length);
+    writeUint16(centralView, 30, 0);
+    writeUint16(centralView, 32, 0);
+    writeUint16(centralView, 34, 0);
+    writeUint16(centralView, 36, 0);
+    writeUint32(centralView, 38, 0);
+    writeUint32(centralView, 42, offset);
+    centralHeader.set(nameBytes, 46);
+    centralParts.push(centralHeader);
+
+    offset += localHeader.length + file.bytes.length;
+  });
+
+  const centralOffset = offset;
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const endHeader = new Uint8Array(22);
+  const endView = new DataView(endHeader.buffer);
+  writeUint32(endView, 0, 0x06054b50);
+  writeUint16(endView, 4, 0);
+  writeUint16(endView, 6, 0);
+  writeUint16(endView, 8, files.length);
+  writeUint16(endView, 10, files.length);
+  writeUint32(endView, 12, centralSize);
+  writeUint32(endView, 16, centralOffset);
+  writeUint16(endView, 20, 0);
+
+  return concatUint8Arrays([...localParts, ...centralParts, endHeader]);
+}
+
+function concatUint8Arrays(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach((part) => {
+    result.set(part, offset);
+    offset += part.length;
+  });
+  return result;
+}
+
+function writeUint16(view, offset, value) {
+  view.setUint16(offset, value, true);
+}
+
+function writeUint32(view, offset, value) {
+  view.setUint32(offset, value >>> 0, true);
+}
+
+function getDosDateTime(date) {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  };
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc = CRC32_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function drawInstanceImage(canvas, model, instanceKey = "a") {
+  const config = getInstanceImageConfig(instanceKey);
+  const hosts = model.hostGroups[config.key] || [];
   canvas.width = 1600;
   canvas.height = 900;
   const ctx = canvas.getContext("2d");
-  const imageEntries = await Promise.all(model.hostRows.map(async (row) => {
+  const imageEntries = await Promise.all(hosts.map(async (row) => {
     if (!row.user.photo_data_url) return [row.user.id, null];
     try {
       return [row.user.id, await loadCanvasImage(row.user.photo_data_url)];
@@ -3882,10 +4095,8 @@ async function drawInstanceImage(canvas, model) {
   const imageMap = new Map(imageEntries);
 
   drawInstanceBackground(ctx, canvas.width, canvas.height);
-  drawInstanceImageHeader(ctx, model);
-  drawInstanceImagePanel(ctx, 60, 166, 705, 656, "第1インスタンス", model.hostGroups.a, model.staffGroups.a, imageMap, model, "a");
-  drawInstanceImagePanel(ctx, 835, 166, 705, 656, "第2インスタンス", model.hostGroups.b, model.staffGroups.b, imageMap, model, "b");
-  drawInstanceFooter(ctx, model);
+  drawInstanceImageHeader(ctx, model, config.title);
+  drawInstancePosterGrid(ctx, hosts, imageMap);
 }
 
 function loadCanvasImage(src) {
@@ -3899,129 +4110,154 @@ function loadCanvasImage(src) {
 
 function drawInstanceBackground(ctx, width, height) {
   const gradient = ctx.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, "#04070c");
-  gradient.addColorStop(0.48, "#08111d");
-  gradient.addColorStop(1, "#020409");
+  gradient.addColorStop(0, "#07101f");
+  gradient.addColorStop(0.58, "#111d34");
+  gradient.addColorStop(1, "#07323a");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(47, 140, 255, 0.14)";
-  ctx.beginPath();
-  ctx.ellipse(220, 60, 430, 170, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(214, 181, 109, 0.56)";
-  ctx.lineWidth = 2;
-  roundRectPath(ctx, 28, 28, width - 56, height - 56, 28);
-  ctx.stroke();
-}
 
-function drawInstanceImageHeader(ctx, model) {
-  ctx.fillStyle = "#d6b56d";
-  ctx.font = "700 24px Georgia, serif";
-  ctx.fillText("LEGACY GROUP", 66, 78);
-  ctx.fillStyle = "#fff8ea";
-  ctx.font = "700 48px Georgia, serif";
-  ctx.fillText("Legacy Lily Instance Assignment", 66, 132);
-  ctx.fillStyle = "#c7bda6";
-  ctx.font = "700 24px sans-serif";
-  ctx.fillText(model.event ? formatDateLabel(model.event.event_date) : "対象日未設定", 1220, 94);
-}
-
-function drawInstanceImagePanel(ctx, x, y, width, height, title, hosts, staffRows, imageMap, model, instanceKey) {
-  roundRectPath(ctx, x, y, width, height, 22);
-  ctx.fillStyle = "rgba(8, 17, 29, 0.82)";
-  ctx.fill();
-  ctx.strokeStyle = "rgba(214, 181, 109, 0.42)";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  ctx.fillStyle = "#fff4d2";
-  ctx.font = "700 32px Georgia, serif";
-  ctx.fillText(title, x + 28, y + 48);
-  ctx.fillStyle = "#c7bda6";
-  ctx.font = "700 18px sans-serif";
-  const staff = staffRows.map((row) => row.member.display_name).join("、") || "未配置";
-  ctx.fillText(`内勤: ${staff}`, x + 28, y + 82);
-
-  const summary = getInstanceReservationSummary(instanceKey, model);
-  ctx.fillStyle = "rgba(214, 181, 109, 0.14)";
-  roundRectPath(ctx, x + 28, y + 102, width - 56, 58, 14);
-  ctx.fill();
-  ctx.fillStyle = "#d6b56d";
-  ctx.font = "700 18px sans-serif";
-  ctx.fillText(`前半 ${summary[TIME_SLOTS[0]].total}件  通常${summary[TIME_SLOTS[0]].normal} / join${summary[TIME_SLOTS[0]].ivan}`, x + 48, y + 136);
-  ctx.fillText(`後半 ${summary[TIME_SLOTS[1]].total}件  通常${summary[TIME_SLOTS[1]].normal} / join${summary[TIME_SLOTS[1]].ivan}`, x + 360, y + 136);
-
-  const columns = 3;
-  const cardW = (width - 76) / columns;
-  const cardH = 128;
-  hosts.slice(0, 12).forEach((row, index) => {
-    const cx = x + 28 + (index % columns) * (cardW + 10);
-    const cy = y + 184 + Math.floor(index / columns) * (cardH + 12);
-    drawHostImageCard(ctx, cx, cy, cardW, cardH, row, imageMap.get(row.user.id));
-  });
-  if (!hosts.length) {
-    ctx.fillStyle = "#8e836d";
-    ctx.font = "700 22px sans-serif";
-    ctx.fillText("未配置", x + 28, y + 218);
-  }
-}
-
-function drawHostImageCard(ctx, x, y, width, height, row, image) {
-  roundRectPath(ctx, x, y, width, height, 16);
-  ctx.fillStyle = "rgba(4, 7, 12, 0.74)";
-  ctx.fill();
-  ctx.strokeStyle = "rgba(214, 181, 109, 0.28)";
-  ctx.stroke();
-  drawCircularHostImage(ctx, x + 46, y + 48, 34, image, row.user.display_name);
-  ctx.fillStyle = "#fff8ea";
-  ctx.font = "700 20px sans-serif";
-  fitCanvasText(ctx, row.user.display_name, x + 92, y + 42, width - 108);
-  ctx.fillStyle = "#c7bda6";
-  ctx.font = "700 14px sans-serif";
-  const reservation = row.reservations[0] ? formatInstanceReservationItem(row.reservations[0]) : "予約なし";
-  fitCanvasText(ctx, reservation, x + 92, y + 68, width - 108);
-  ctx.fillStyle = "#d6b56d";
-  ctx.font = "700 13px sans-serif";
-  ctx.fillText(`${row.status} / ${row.reservations.length}件`, x + 92, y + 94);
-}
-
-function drawCircularHostImage(ctx, x, y, radius, image, name) {
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.clip();
-  if (image) {
-    const size = Math.min(image.naturalWidth || image.width, image.naturalHeight || image.height);
-    const sx = ((image.naturalWidth || image.width) - size) / 2;
-    const sy = ((image.naturalHeight || image.height) - size) / 2;
-    ctx.drawImage(image, sx, sy, size, size, x - radius, y - radius, radius * 2, radius * 2);
-  } else {
-    ctx.fillStyle = "rgba(47, 140, 255, 0.22)";
-    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-    ctx.fillStyle = "#fff8ea";
-    ctx.font = "700 24px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(name || "?").slice(0, 1), x, y);
-    ctx.textAlign = "left";
-    ctx.textBaseline = "alphabetic";
+  ctx.strokeStyle = "rgba(214, 181, 109, 0.12)";
+  ctx.lineWidth = 5;
+  for (let x = -width; x < width * 1.7; x += 138) {
+    ctx.beginPath();
+    ctx.moveTo(x, height + 40);
+    ctx.lineTo(x + height + 140, -40);
+    ctx.stroke();
   }
   ctx.restore();
-  ctx.strokeStyle = "rgba(214, 181, 109, 0.72)";
-  ctx.lineWidth = 2;
+
+  const glow = ctx.createRadialGradient(width * 0.12, height * 0.1, 0, width * 0.12, height * 0.1, width * 0.52);
+  glow.addColorStop(0, "rgba(47, 140, 255, 0.24)");
+  glow.addColorStop(1, "rgba(47, 140, 255, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, height);
+}
+
+function drawInstanceImageHeader(ctx, model, instanceTitle) {
+  ctx.fillStyle = "#fff8ea";
+  ctx.textAlign = "center";
+  ctx.font = "800 86px Arial, sans-serif";
+  ctx.fillText("ABYSS   出勤ホスト", 800, 96);
+  ctx.fillStyle = "#c7bda6";
+  ctx.font = "800 28px Arial, sans-serif";
+  const dateLabel = model.event ? model.event.event_date.replaceAll("-", "/") : "対象日未設定";
+  ctx.fillText(`Group Join  ×  ${dateLabel}`, 800, 144);
+  ctx.strokeStyle = "#d6b56d";
+  ctx.lineWidth = 7;
+  ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.moveTo(626, 172);
+  ctx.lineTo(974, 172);
+  ctx.stroke();
+  ctx.lineCap = "butt";
+  ctx.fillStyle = "#fff8ea";
+  ctx.font = "800 40px Arial, sans-serif";
+  ctx.fillText(instanceTitle, 800, 218);
+  ctx.textAlign = "left";
+}
+
+function drawInstancePosterGrid(ctx, hosts, imageMap) {
+  if (!hosts.length) {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255, 248, 234, 0.72)";
+    ctx.font = "800 36px Arial, sans-serif";
+    ctx.fillText("未配置", 800, 510);
+    ctx.textAlign = "left";
+    return;
+  }
+
+  const layout = getInstancePosterLayout(hosts.length, 1600, 900);
+  hosts.forEach((row, index) => {
+    const col = index % layout.cols;
+    const rowIndex = Math.floor(index / layout.cols);
+    const x = layout.startX + col * (layout.cardW + layout.gapX);
+    const y = layout.startY + rowIndex * (layout.cardH + layout.gapY);
+    drawInstancePosterCard(ctx, x, y, layout.cardW, layout.cardH, row, imageMap.get(row.user.id));
+  });
+}
+
+function getInstancePosterLayout(count, width, height) {
+  const rows = count <= 5 ? 1 : count <= 12 ? 2 : 3;
+  const cols = Math.ceil(count / rows);
+  const top = 240;
+  const bottom = 56;
+  const availableW = width - 190;
+  const availableH = height - top - bottom;
+  const minGapX = 34;
+  const minGapY = rows === 3 ? 22 : 28;
+  const maxCardW = rows === 1 ? 176 : rows === 2 ? 160 : 126;
+  let cardW = Math.min(maxCardW, (availableW - minGapX * (cols - 1)) / cols);
+  let cardH = cardW * 16 / 9;
+  const maxCardH = (availableH - minGapY * (rows - 1)) / rows;
+  if (cardH > maxCardH) {
+    cardH = maxCardH;
+    cardW = cardH * 9 / 16;
+  }
+  const gapX = cols > 1 ? Math.min(155, Math.max(minGapX, (availableW - cardW * cols) / (cols - 1))) : 0;
+  const gapY = rows > 1 ? Math.min(78, Math.max(minGapY, (availableH - cardH * rows) / (rows - 1))) : 0;
+  const totalW = cardW * cols + gapX * (cols - 1);
+  const totalH = cardH * rows + gapY * (rows - 1);
+  return {
+    rows,
+    cols,
+    cardW,
+    cardH,
+    gapX,
+    gapY,
+    startX: (width - totalW) / 2,
+    startY: top + (availableH - totalH) / 2,
+  };
+}
+
+function drawInstancePosterCard(ctx, x, y, width, height, row, image) {
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.62)";
+  ctx.shadowBlur = 12;
+  ctx.shadowOffsetY = 8;
+  roundRectPath(ctx, x, y, width, height, 7);
+  ctx.fillStyle = "#020409";
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  roundRectPath(ctx, x + 3, y + 3, width - 6, height - 6, 4);
+  ctx.clip();
+  if (image) {
+    drawImageCover(ctx, image, x + 3, y + 3, width - 6, height - 6);
+  } else {
+    const gradient = ctx.createLinearGradient(x, y, x + width, y + height);
+    gradient.addColorStop(0, "#030509");
+    gradient.addColorStop(0.58, "#0a0c10");
+    gradient.addColorStop(1, "#000000");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x + 3, y + 3, width - 6, height - 6);
+    ctx.fillStyle = "#fff8ea";
+    ctx.font = `800 ${Math.max(16, width * 0.12)}px Arial, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("no photo", x + width / 2, y + height * 0.46);
+    ctx.fillStyle = "#d6b56d";
+    ctx.font = `700 ${Math.max(13, width * 0.08)}px Georgia, serif`;
+    ctx.fillText(row.user.display_name, x + width / 2, y + height - 22);
+    ctx.textAlign = "left";
+  }
+  ctx.restore();
+
+  ctx.fillStyle = "#d6b56d";
+  ctx.lineWidth = Math.max(2, width * 0.018);
+  roundRectPath(ctx, x, y, width, height, 6);
   ctx.stroke();
 }
 
-function drawInstanceFooter(ctx, model) {
-  const free = model.hostGroups.free.map((row) => row.user.display_name).join("、") || "なし";
-  ctx.fillStyle = "#c7bda6";
-  ctx.font = "700 20px sans-serif";
-  ctx.fillText(`自由行動: ${free}`, 66, 852);
-  ctx.fillStyle = "#d6b56d";
-  ctx.font = "700 18px Georgia, serif";
-  ctx.fillText("Legacy Lily / Legacy Rose ready", 1220, 852);
+function drawImageCover(ctx, image, x, y, width, height) {
+  const imageW = image.naturalWidth || image.width;
+  const imageH = image.naturalHeight || image.height;
+  const scale = Math.max(width / imageW, height / imageH);
+  const sw = width / scale;
+  const sh = height / scale;
+  const sx = (imageW - sw) / 2;
+  const sy = (imageH - sh) / 2;
+  ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height);
 }
 
 function roundRectPath(ctx, x, y, width, height, radius) {

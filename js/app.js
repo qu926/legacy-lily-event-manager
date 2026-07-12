@@ -4094,9 +4094,9 @@ async function drawInstanceImage(canvas, model, instanceKey = "a") {
   }));
   const imageMap = new Map(imageEntries);
 
-  drawInstanceBackground(ctx, canvas.width, canvas.height);
-  drawInstanceImageHeader(ctx, model, config.title);
-  drawInstancePosterGrid(ctx, hosts, imageMap);
+  drawWorldToneInstanceBackground(ctx, canvas.width, canvas.height);
+  drawWorldToneInstanceImageHeader(ctx, model, config.title);
+  drawWorldToneInstancePosterGrid(ctx, hosts, imageMap);
 }
 
 function loadCanvasImage(src) {
@@ -4106,6 +4106,172 @@ function loadCanvasImage(src) {
     image.onerror = reject;
     image.src = src;
   });
+}
+
+const INSTANCE_IMAGE_THEME = {
+  bg0: "#050612",
+  bg1: "#101326",
+  bg2: "#1a1436",
+  marble: "rgba(235, 228, 255, 0.075)",
+  lineSoft: "rgba(178, 137, 255, 0.12)",
+  accent: "#caa1ff",
+  accentSoft: "rgba(202, 161, 255, 0.32)",
+  cyanSoft: "rgba(143, 224, 255, 0.12)",
+  text: "#f8f4ff",
+  muted: "#c8bed9",
+  card: "#050711",
+  cardMid: "#121427",
+  cardLine: "rgba(221, 210, 244, 0.72)",
+  shadow: "rgba(0, 0, 0, 0.66)",
+};
+
+function drawWorldToneInstanceBackground(ctx, width, height) {
+  const theme = INSTANCE_IMAGE_THEME;
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, theme.bg0);
+  gradient.addColorStop(0.48, theme.bg1);
+  gradient.addColorStop(1, theme.bg2);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  ctx.strokeStyle = theme.lineSoft;
+  ctx.lineWidth = 4;
+  for (let x = -width; x < width * 1.7; x += 142) {
+    ctx.beginPath();
+    ctx.moveTo(x, height + 40);
+    ctx.lineTo(x + height + 140, -40);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.68;
+  for (let x = -120; x < width; x += 218) {
+    const marble = ctx.createLinearGradient(x, 0, x + 420, height);
+    marble.addColorStop(0, "transparent");
+    marble.addColorStop(0.5, theme.marble);
+    marble.addColorStop(1, "transparent");
+    ctx.fillStyle = marble;
+    ctx.fillRect(x, 0, 420, height);
+  }
+  ctx.restore();
+
+  const glow = ctx.createRadialGradient(width * 0.2, height * 0.12, 0, width * 0.2, height * 0.12, width * 0.52);
+  glow.addColorStop(0, theme.accentSoft);
+  glow.addColorStop(1, "rgba(202, 161, 255, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, height);
+
+  const cyanGlow = ctx.createRadialGradient(width * 0.82, height * 0.68, 0, width * 0.82, height * 0.68, width * 0.42);
+  cyanGlow.addColorStop(0, theme.cyanSoft);
+  cyanGlow.addColorStop(1, "rgba(143, 224, 255, 0)");
+  ctx.fillStyle = cyanGlow;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+  for (let index = 0; index < 56; index += 1) {
+    const x = (index * 197 + 83) % width;
+    const y = (index * 113 + 41) % height;
+    const radius = index % 5 === 0 ? 2 : 1;
+    ctx.globalAlpha = index % 4 === 0 ? 0.72 : 0.34;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawWorldToneInstanceImageHeader(ctx, model, instanceTitle) {
+  const theme = INSTANCE_IMAGE_THEME;
+  ctx.fillStyle = theme.text;
+  ctx.textAlign = "center";
+  ctx.font = "800 86px Arial, sans-serif";
+  ctx.fillText("ABYSS   出勤ホスト", 800, 96);
+  ctx.fillStyle = theme.muted;
+  ctx.font = "800 28px Arial, sans-serif";
+  const dateLabel = model.event ? model.event.event_date.replaceAll("-", "/") : "対象日未設定";
+  ctx.fillText(`Group Join  ×  ${dateLabel}`, 800, 144);
+  ctx.strokeStyle = theme.accent;
+  ctx.lineWidth = 6;
+  ctx.lineCap = "round";
+  ctx.shadowColor = theme.accentSoft;
+  ctx.shadowBlur = 16;
+  ctx.beginPath();
+  ctx.moveTo(626, 172);
+  ctx.lineTo(974, 172);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.lineCap = "butt";
+  ctx.fillStyle = theme.text;
+  ctx.font = "800 40px Arial, sans-serif";
+  ctx.fillText(instanceTitle, 800, 218);
+  ctx.textAlign = "left";
+}
+
+function drawWorldToneInstancePosterGrid(ctx, hosts, imageMap) {
+  if (!hosts.length) {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(248, 244, 255, 0.72)";
+    ctx.font = "800 36px Arial, sans-serif";
+    ctx.fillText("未配置", 800, 510);
+    ctx.textAlign = "left";
+    return;
+  }
+
+  const layout = getInstancePosterLayout(hosts.length, 1600, 900);
+  hosts.forEach((row, index) => {
+    const col = index % layout.cols;
+    const rowIndex = Math.floor(index / layout.cols);
+    const x = layout.startX + col * (layout.cardW + layout.gapX);
+    const y = layout.startY + rowIndex * (layout.cardH + layout.gapY);
+    drawWorldToneInstancePosterCard(ctx, x, y, layout.cardW, layout.cardH, row, imageMap.get(row.user.id));
+  });
+}
+
+function drawWorldToneInstancePosterCard(ctx, x, y, width, height, row, image) {
+  const theme = INSTANCE_IMAGE_THEME;
+  ctx.save();
+  ctx.shadowColor = theme.shadow;
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 8;
+  roundRectPath(ctx, x, y, width, height, 7);
+  ctx.fillStyle = theme.card;
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  roundRectPath(ctx, x + 3, y + 3, width - 6, height - 6, 4);
+  ctx.clip();
+  if (image) {
+    drawImageCover(ctx, image, x + 3, y + 3, width - 6, height - 6);
+  } else {
+    const gradient = ctx.createLinearGradient(x, y, x + width, y + height);
+    gradient.addColorStop(0, theme.card);
+    gradient.addColorStop(0.58, theme.cardMid);
+    gradient.addColorStop(1, "#02030a");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x + 3, y + 3, width - 6, height - 6);
+    ctx.fillStyle = theme.text;
+    ctx.font = `800 ${Math.max(16, width * 0.12)}px Arial, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("no photo", x + width / 2, y + height * 0.46);
+    ctx.fillStyle = theme.accent;
+    ctx.font = `700 ${Math.max(13, width * 0.08)}px Georgia, serif`;
+    ctx.fillText(row.user.display_name, x + width / 2, y + height - 22);
+    ctx.textAlign = "left";
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.shadowColor = theme.accentSoft;
+  ctx.shadowBlur = 8;
+  ctx.strokeStyle = theme.cardLine;
+  ctx.lineWidth = Math.max(2, width * 0.018);
+  roundRectPath(ctx, x, y, width, height, 6);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawInstanceBackground(ctx, width, height) {

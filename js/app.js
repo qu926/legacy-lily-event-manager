@@ -139,6 +139,7 @@ const BRAND_NAME = String(APP_CONFIG.brandName);
 const APP_TITLE = String(APP_CONFIG.title);
 const APP_EYEBROW = String(APP_CONFIG.eyebrow || BRAND_NAME);
 const LOGO_PATH = String(APP_CONFIG.logoPath || "").trim();
+const WIDE_LOGO_PATH = String(APP_CONFIG.wideLogoPath || "").trim();
 const LOGO_ALT = String(APP_CONFIG.logoAlt || `${BRAND_NAME} ロゴ`);
 const STATE_ROW_ID = String(APP_CONFIG.stateRowId || APP_ID);
 const STORE_THEMES = {
@@ -680,11 +681,13 @@ function render() {
     <div class="app-shell">
       <header class="app-header">
         <div class="brand-lockup" aria-label="${escapeAttr(`${BRAND_NAME} ${APP_TITLE}`)}">
-          ${LOGO_PATH ? `<img class="brand-mark" src="${escapeAttr(LOGO_PATH)}" alt="${escapeAttr(LOGO_ALT)}">` : ""}
-          <div>
-            <p class="brand-name">LEGACY GROUP</p>
-            <p class="eyebrow">${escapeHtml(APP_EYEBROW)}</p>
-          </div>
+          ${WIDE_LOGO_PATH
+            ? `<img class="brand-wide-logo" src="${escapeAttr(WIDE_LOGO_PATH)}" alt="${escapeAttr(LOGO_ALT)}">`
+            : `${LOGO_PATH ? `<img class="brand-mark" src="${escapeAttr(LOGO_PATH)}" alt="${escapeAttr(LOGO_ALT)}">` : ""}
+              <div>
+                <p class="brand-name">LEGACY GROUP</p>
+                <p class="eyebrow">${escapeHtml(APP_EYEBROW)}</p>
+              </div>`}
         </div>
         <div class="header-title">
           <h1>${escapeHtml(APP_TITLE)}</h1>

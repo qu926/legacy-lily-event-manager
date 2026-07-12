@@ -6,7 +6,8 @@ window.EVENT_MANAGER_CONFIG = {
   brandName: "Legacy Lily店",
   title: "Legacy Lily店 勤怠・予約管理",
   eyebrow: "Legacy Group / Lily",
-  logoPath: "./assets/lily-logo.svg",
+  logoPath: "./assets/lily-mark-silver.png",
+  wideLogoPath: "./assets/lily-wordmark-silver.png",
   logoAlt: "Legacy Lily店 ロゴ",
 
   // 安全な既定値として、このブラウザ内だけに保存します。

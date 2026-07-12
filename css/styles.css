@@ -2604,6 +2604,16 @@ html[data-store-theme="rose"] body {
     0 0 22px rgba(var(--gold-rgb), 0.08);
 }
 
+.brand-wide-logo {
+  display: block;
+  width: min(154px, 100%);
+  height: auto;
+  max-height: 74px;
+  object-fit: contain;
+  object-position: left center;
+  filter: drop-shadow(0 0 12px rgba(218, 207, 237, 0.24));
+}
+
 .brand-name {
   color: var(--champagne-pale);
   font-family: Georgia, "Yu Mincho", "Hiragino Mincho ProN", serif;
@@ -3280,6 +3290,11 @@ textarea:focus {
   .brand-mark {
     width: 60px;
     height: 60px;
+  }
+
+  .brand-wide-logo {
+    width: 132px;
+    max-height: 64px;
   }
 
   .store-switch-options,

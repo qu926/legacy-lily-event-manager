@@ -7,7 +7,8 @@ const { test } = require("node:test");
 const root = path.resolve(__dirname, "..");
 const slug = "legacy-lily-event-manager";
 const title = "Legacy Lily店 勤怠・予約管理";
-const logoPath = "./assets/lily-logo.svg";
+const logoPath = "./assets/lily-mark-silver.png";
+const wideLogoPath = "./assets/lily-wordmark-silver.png";
 const homepage = "https://qu926.github.io/legacy-lily-event-manager/";
 const repositoryUrl = "https://github.com/qu926/legacy-lily-event-manager.git";
 const textExtensions = new Set([
@@ -89,6 +90,7 @@ test("window config contains the Lily deployment identifiers and branding", asyn
   assert.equal(config.title, title);
   assert.equal(config.eyebrow, "Legacy Group / Lily");
   assert.equal(config.logoPath, logoPath);
+  assert.equal(config.wideLogoPath, wideLogoPath);
   assert.equal(config.logoAlt, "Legacy Lily店 ロゴ");
   assert.equal(config.core.sitePassword, "lily");
   assert.equal(config.core.adminPassword, "lily2026");
@@ -121,7 +123,7 @@ test("index metadata uses the Lily title and logo", async () => {
   assert.match(html, /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/qu926\.github\.io\/legacy-lily-event-manager\/["'])[^>]*>/);
   assert.match(
     html,
-    /<link\b(?=[^>]*\brel=["']icon["'])(?=[^>]*\bhref=["']\.\/assets\/lily-logo\.svg["'])[^>]*>/,
+    /<link\b(?=[^>]*\brel=["']icon["'])(?=[^>]*\bhref=["']\.\/assets\/lily-mark-silver\.png["'])[^>]*>/,
   );
 });
 
@@ -134,12 +136,14 @@ test("README documents the Lily deployment slug", async () => {
 
 test("configured Lily logo asset exists and is not empty", async () => {
   const config = await loadWindowConfig();
-  const normalizedLogoPath = config.logoPath.replace(/^\.\//, "");
-  const logoFile = fromRoot(...normalizedLogoPath.split("/"));
-  const stat = await fs.stat(logoFile);
+  for (const configuredPath of [config.logoPath, config.wideLogoPath]) {
+    const normalizedLogoPath = configuredPath.replace(/^\.\//, "");
+    const logoFile = fromRoot(...normalizedLogoPath.split("/"));
+    const stat = await fs.stat(logoFile);
 
-  assert.ok(stat.isFile(), `${config.logoPath} must be a file`);
-  assert.ok(stat.size > 0, `${config.logoPath} must not be empty`);
+    assert.ok(stat.isFile(), `${configuredPath} must be a file`);
+    assert.ok(stat.size > 0, `${configuredPath} must not be empty`);
+  }
 });
 
 test("repository text contains no legacy template branding", async () => {

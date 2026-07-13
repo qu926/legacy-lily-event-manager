@@ -4,6 +4,9 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
 
+require("./ui-regression.test.cjs");
+require("./member-lifecycle.test.cjs");
+
 const root = path.resolve(__dirname, "..");
 const slug = "legacy-lily-event-manager";
 const title = "Legacy Lily店 勤怠・予約管理";

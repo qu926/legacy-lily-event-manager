@@ -133,6 +133,8 @@ const APP_ID = String(APP_CONFIG.appId).trim();
 const LOCAL_STORAGE_VERSION = String(APP_CONFIG.localStorageVersion || "v1").trim() || "v1";
 const STORAGE_KEY = `${APP_ID}:state:${LOCAL_STORAGE_VERSION}`;
 const PENDING_LOCAL_CHANGES_KEY = `${APP_ID}:pending-local-changes`;
+const PENDING_HARD_DELETES_KEY = `${APP_ID}:pending-hard-deletes`;
+const PERSON_TOMBSTONES_META_KEY = "person_tombstones";
 const SITE_SESSION_KEY = `${APP_ID}:site-unlocked`;
 const ADMIN_SESSION_KEY = `${APP_ID}:admin-unlocked`;
 const BRAND_NAME = String(APP_CONFIG.brandName);
@@ -268,6 +270,7 @@ let view = {
   editingVacationId: "",
   editingEventId: "",
   editingReservationRequestId: "",
+  expandedInactivePersonType: "",
 };
 
 view.eventId = getDefaultEventId();
@@ -304,7 +307,7 @@ function loadState() {
 
 function migrateState(saved) {
   const fresh = buildDefaultState();
-  return {
+  const migrated = {
     ...fresh,
     ...saved,
     event_dates: migrateEventDates(saved.event_dates || fresh.event_dates),
@@ -317,8 +320,122 @@ function migrateState(saved) {
     reservation_requests: saved.reservation_requests || [],
     instance_assignments: saved.instance_assignments || [],
     settings: { ...fresh.settings, ...(saved.settings || {}) },
-    meta: { ...fresh.meta, ...(saved.meta || {}) },
+    meta: {
+      ...fresh.meta,
+      ...(saved.meta || {}),
+      [PERSON_TOMBSTONES_META_KEY]: normalizePersonTombstones(saved.meta?.[PERSON_TOMBSTONES_META_KEY]),
+    },
   };
+  return applyPersonTombstones(migrated);
+}
+
+function normalizePersonTombstones(tombstones) {
+  const byPerson = new Map();
+  for (const tombstone of Array.isArray(tombstones) ? tombstones : []) {
+    const personType = tombstone?.person_type;
+    const personId = String(tombstone?.person_id || "").trim();
+    const deletedAt = typeof tombstone?.deleted_at === "string" ? tombstone.deleted_at : "";
+    if (!["host", "staff"].includes(personType) || !personId || !Number.isFinite(Date.parse(deletedAt))) continue;
+    const normalized = { person_type: personType, person_id: personId, deleted_at: deletedAt };
+    const key = `${personType}:${personId}`;
+    const current = byPerson.get(key);
+    if (!current || Date.parse(normalized.deleted_at) >= Date.parse(current.deleted_at)) byPerson.set(key, normalized);
+  }
+  return [...byPerson.values()].sort((a, b) => {
+    return `${a.person_type}:${a.person_id}`.localeCompare(`${b.person_type}:${b.person_id}`);
+  });
+}
+
+function mergePersonTombstones(...states) {
+  return normalizePersonTombstones(states.flatMap((item) => item?.meta?.[PERSON_TOMBSTONES_META_KEY] || []));
+}
+
+function mergeSharedStateWithPersonTombstones(remoteState, localState, options = {}) {
+  const tombstones = mergePersonTombstones(remoteState, localState);
+  const mergedState = mergeSharedState(remoteState, localState);
+  mergedState.meta = {
+    ...(mergedState.meta || {}),
+    [PERSON_TOMBSTONES_META_KEY]: tombstones,
+  };
+  return options.deferTombstones ? mergedState : applyPersonTombstones(mergedState);
+}
+
+function applyPersonTombstones(nextState) {
+  const tombstones = normalizePersonTombstones(nextState.meta?.[PERSON_TOMBSTONES_META_KEY]);
+  nextState.meta = {
+    ...(nextState.meta || {}),
+    [PERSON_TOMBSTONES_META_KEY]: tombstones,
+  };
+  for (const tombstone of tombstones) {
+    removeManagedPersonRecord(nextState, tombstone.person_type, tombstone.person_id);
+    sanitizeManagedPersonHistory(nextState, tombstone.person_type, tombstone.person_id);
+  }
+  if (typeof removeTombstonedPersonReferences === "function") removeTombstonedPersonReferences(nextState);
+  return nextState;
+}
+
+function getManagedPersonVersion(person) {
+  const entries = Object.keys(person || {}).sort().map((key) => [key, person[key]]);
+  const serialized = JSON.stringify(entries);
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${person?.updated_at || ""}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function getHardDeleteOperationKey(operation) {
+  return `${operation.personType}:${operation.id}:${operation.deletedAt}`;
+}
+
+function normalizePendingHardDeleteOperation(operation) {
+  const personType = operation?.personType;
+  const id = String(operation?.id || "").trim();
+  const deletedAt = typeof operation?.deletedAt === "string" ? operation.deletedAt : "";
+  const expectedVersion = typeof operation?.expectedVersion === "string" ? operation.expectedVersion : "";
+  if (!["host", "staff"].includes(personType) || !id || !expectedVersion || !Number.isFinite(Date.parse(deletedAt))) return null;
+  const personSnapshot = operation.personSnapshot && typeof operation.personSnapshot === "object"
+    ? removeHostPhotoData(clone(operation.personSnapshot))
+    : null;
+  return {
+    personType,
+    id,
+    collection: personType === "host" ? "users" : "staff_members",
+    historyTargetType: personType === "host" ? "user" : "staff_member",
+    deletedAt,
+    expectedVersion,
+    personSnapshot,
+  };
+}
+
+function loadPendingHardDeletes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PENDING_HARD_DELETES_KEY) || "[]");
+    return (Array.isArray(parsed) ? parsed : []).map(normalizePendingHardDeleteOperation).filter(Boolean);
+  } catch (error) {
+    console.warn(error);
+    return [];
+  }
+}
+
+function persistPendingHardDeletes(operations) {
+  const byPerson = new Map(loadPendingHardDeletes().map((operation) => [`${operation.personType}:${operation.id}`, operation]));
+  for (const input of operations || []) {
+    const operation = normalizePendingHardDeleteOperation(input);
+    if (!operation) continue;
+    byPerson.set(`${operation.personType}:${operation.id}`, operation);
+  }
+  const pending = [...byPerson.values()];
+  if (pending.length) localStorage.setItem(PENDING_HARD_DELETES_KEY, JSON.stringify(pending));
+  else localStorage.removeItem(PENDING_HARD_DELETES_KEY);
+}
+
+function removePendingHardDeletes(operations) {
+  const keys = new Set((operations || []).map(getHardDeleteOperationKey));
+  const pending = loadPendingHardDeletes().filter((operation) => !keys.has(getHardDeleteOperationKey(operation)));
+  if (pending.length) localStorage.setItem(PENDING_HARD_DELETES_KEY, JSON.stringify(pending));
+  else localStorage.removeItem(PENDING_HARD_DELETES_KEY);
 }
 
 function migrateReservations(reservations, events) {
@@ -405,12 +522,20 @@ function getInitialSyncStatus() {
 async function initializeSharedState() {
   if (syncStatus.mode !== "supabase") return;
   try {
+    let record = await loadSharedRecord();
+    const pendingHardDeletes = typeof loadPendingHardDeletes === "function" ? loadPendingHardDeletes() : [];
+    if (record.state && pendingHardDeletes.length) {
+      await reconcilePendingHardDeletes(pendingHardDeletes);
+      record = await loadSharedRecord();
+    }
     const hasPendingLocalChanges = localStorage.getItem(PENDING_LOCAL_CHANGES_KEY) === "1";
     const localState = hasStoredLocalState && hasPendingLocalChanges ? state : null;
-    const record = await loadSharedRecord();
     if (record.state) {
       const migratedRemoteState = migrateState(record.state);
-      const mergedState = localState ? mergeSharedState(migratedRemoteState, localState) : migratedRemoteState;
+      const mergedState = localState ? mergeSharedStateWithPersonTombstones(migratedRemoteState, localState) : migratedRemoteState;
+      if (typeof assertNoTombstonedPersonReferences === "function") {
+        assertNoTombstonedPersonReferences(mergedState, migratedRemoteState);
+      }
       state = mergedState;
       let shouldSaveMigratedState = hasPersistableMigration(record.state, migratedRemoteState) || hasPersistableMerge(migratedRemoteState, mergedState);
       const result = archiveFinishedEvents(state);
@@ -430,13 +555,101 @@ async function initializeSharedState() {
     render();
   } catch (error) {
     console.error(error);
+    if (error.recoveryState) {
+      state = error.recoveryState;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      removePendingHardDeletes(error.hardDeleteOperations || []);
+      localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
+      showToast(error.userMessage || "共有DBの最新状態を読み込みました。", "error");
+    }
     syncStatus = { mode: "error", text: shortSyncError(error, "共有DBに接続できません") };
     render();
   }
 }
 
+async function reconcilePendingHardDeletes(operations) {
+  const pending = (operations || []).map(normalizePendingHardDeleteOperation).filter(Boolean);
+  if (!pending.length) return;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record = await loadSharedRecord();
+    if (!record.state) throw new Error("PENDING_HARD_DELETE_WITHOUT_SHARED_STATE");
+    const latestState = migrateState(record.state);
+    const nextState = clone(latestState);
+    const resumable = [];
+    const completed = [];
+    const cancelled = [];
+
+    for (const operation of pending) {
+      try {
+        const validation = validateHardDeletePreconditions(latestState, operation);
+        if (validation.completed) completed.push(operation);
+        else {
+          materializePendingHardDelete(nextState, operation, validation.person);
+          resumable.push(operation);
+        }
+      } catch (error) {
+        if (!error.recoveryState) throw error;
+        cancelled.push({ operation, message: error.userMessage });
+      }
+    }
+
+    assertNoTombstonedPersonReferences(nextState, latestState);
+    if (resumable.length) {
+      try {
+        await saveSharedState(nextState, { expectedUpdatedAt: record.updatedAt });
+      } catch (error) {
+        if (error.code === "STALE_SHARED_STATE") continue;
+        throw error;
+      }
+    }
+
+    const processed = [...resumable, ...completed, ...cancelled.map((item) => item.operation)];
+    removePendingHardDeletes(processed);
+    localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
+    state = resumable.length ? nextState : latestState;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (cancelled.length) showToast(cancelled.map((item) => item.message).join(" / "), "error");
+    return;
+  }
+  throw new Error("STALE_SHARED_STATE");
+}
+
+function materializePendingHardDelete(nextState, operation, latestPerson) {
+  applyHardDeleteOperations(nextState, [operation]);
+  const historyExists = (nextState.histories || []).some((history) => {
+    return history.target_type === operation.historyTargetType
+      && String(history.target_id) === String(operation.id)
+      && history.changed_at === operation.deletedAt
+      && history.after_payload?.deleted === true;
+  });
+  if (!historyExists) {
+    nextState.histories ||= [];
+    nextState.histories.unshift({
+      id: createId("hist"),
+      target_type: operation.historyTargetType,
+      target_id: operation.id,
+      before_payload: operation.personSnapshot || removeHostPhotoData(clone(latestPerson)),
+      after_payload: { deleted: true },
+      changed_at: operation.deletedAt,
+      change_note: `${operation.personType === "host" ? "ホスト" : "内勤"}を完全削除`,
+    });
+    nextState.histories = nextState.histories.slice(0, 300);
+  }
+  const currentMetaUpdatedAt = nextState.meta?.updated_at || "";
+  nextState.meta = {
+    ...(nextState.meta || {}),
+    updated_at: Date.parse(currentMetaUpdatedAt) > Date.parse(operation.deletedAt) ? currentMetaUpdatedAt : operation.deletedAt,
+    [PERSON_TOMBSTONES_META_KEY]: normalizePersonTombstones([
+      ...(nextState.meta?.[PERSON_TOMBSTONES_META_KEY] || []),
+      { person_type: operation.personType, person_id: operation.id, deleted_at: operation.deletedAt },
+    ]),
+  };
+  applyPersonTombstones(nextState);
+  return nextState;
+}
+
 function hasPersistableMigration(before, after) {
-  return ["event_dates", "reservations", "reservation_settings", "reservation_requests", "drink_plans", "instance_assignments"].some((key) => {
+  return ["users", "staff_members", "event_dates", "reservations", "reservation_settings", "reservation_requests", "drink_plans", "instance_assignments", "histories", "meta"].some((key) => {
     return JSON.stringify(before[key] || []) !== JSON.stringify(after[key] || []);
   });
 }
@@ -455,6 +668,8 @@ function hasPersistableMerge(before, after) {
     "reservation_requests",
     "drink_plans",
     "instance_assignments",
+    "histories",
+    "meta",
   ].some((key) => {
     return JSON.stringify(before[key] || []) !== JSON.stringify(after[key] || []);
   });
@@ -537,6 +752,7 @@ async function saveSharedStateWithRetry(nextState, expectedUpdatedAt = "") {
   let stateToSave = nextState;
   let expected = expectedUpdatedAt;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (typeof assertNoTombstonedPersonReferences === "function") assertNoTombstonedPersonReferences(stateToSave);
     try {
       await saveSharedState(stateToSave, expected ? { expectedUpdatedAt: expected } : {});
       return stateToSave;
@@ -544,7 +760,10 @@ async function saveSharedStateWithRetry(nextState, expectedUpdatedAt = "") {
       if (error.code !== "STALE_SHARED_STATE") throw error;
       const record = await loadSharedRecord();
       const latestState = record.state ? migrateState(record.state) : null;
-      stateToSave = latestState ? mergeSharedState(latestState, stateToSave) : stateToSave;
+      stateToSave = latestState ? mergeSharedStateWithPersonTombstones(latestState, stateToSave) : applyPersonTombstones(stateToSave);
+      if (typeof assertNoTombstonedPersonReferences === "function") {
+        assertNoTombstonedPersonReferences(stateToSave, latestState);
+      }
       expected = record.updatedAt;
     }
   }
@@ -559,19 +778,40 @@ function getSupabaseHeaders() {
   return headers;
 }
 
-function saveState(nextState, message = "保存しました。") {
+function saveState(nextState, message = "保存しました。", options = {}) {
+  const hardDeleteByPerson = new Map();
+  for (const input of [...loadPendingHardDeletes(), ...(options.hardDeletes || [])]) {
+    const operation = normalizePendingHardDeleteOperation(input);
+    if (operation) hardDeleteByPerson.set(`${operation.personType}:${operation.id}`, operation);
+  }
+  const hardDeletes = [...hardDeleteByPerson.values()];
+  try {
+    assertNoTombstonedPersonReferences(nextState, state);
+  } catch (error) {
+    showToast(error.userMessage || "削除済み人物への参照は保存できません。", "error");
+    return;
+  }
+  if (syncStatus.mode === "supabase" && hardDeletes.length) persistPendingHardDeletes(hardDeletes);
   state = nextState;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   if (syncStatus.mode === "supabase") {
     localStorage.setItem(PENDING_LOCAL_CHANGES_KEY, "1");
-    saveMergedSharedState(state)
+    saveMergedSharedState(state, { ...options, hardDeletes })
       .then(() => {
+        removePendingHardDeletes(hardDeletes);
         localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
         syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
         render();
       })
       .catch((error) => {
         console.error(error);
+        if (error.recoveryState) {
+          state = error.recoveryState;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+          removePendingHardDeletes(error.hardDeleteOperations || hardDeletes);
+          localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
+          showToast(error.userMessage || "参照が追加されたため削除を取り消しました。", "error");
+        }
         syncStatus = { mode: "error", text: shortSyncError(error, "共有DBへの保存に失敗") };
         render();
       });
@@ -580,11 +820,20 @@ function saveState(nextState, message = "保存しました。") {
   render();
 }
 
-async function saveMergedSharedState(localState) {
+async function saveMergedSharedState(localState, options = {}) {
+  const hardDeletes = options.hardDeletes || [];
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const record = await loadSharedRecord();
     const migratedRemoteState = record.state ? migrateState(record.state) : null;
-    const mergedState = migratedRemoteState ? mergeSharedState(migratedRemoteState, localState) : localState;
+    for (const operation of hardDeletes) validateHardDeletePreconditions(migratedRemoteState || localState, operation);
+    const mergedState = migratedRemoteState
+      ? mergeSharedStateWithPersonTombstones(migratedRemoteState, localState, { deferTombstones: true })
+      : localState;
+    applyHardDeleteOperations(mergedState, hardDeletes, { recoveryState: migratedRemoteState });
+    applyPersonTombstones(mergedState);
+    if (typeof assertNoTombstonedPersonReferences === "function") {
+      assertNoTombstonedPersonReferences(mergedState, migratedRemoteState);
+    }
     try {
       await saveSharedState(mergedState, record.updatedAt ? { expectedUpdatedAt: record.updatedAt } : {});
       state = mergedState;
@@ -596,9 +845,84 @@ async function saveMergedSharedState(localState) {
     }
   }
   const record = await loadSharedRecord();
-  state = record.state ? mergeSharedState(migrateState(record.state), localState) : localState;
+  const migratedRemoteState = record.state ? migrateState(record.state) : null;
+  for (const operation of hardDeletes) validateHardDeletePreconditions(migratedRemoteState || localState, operation);
+  state = migratedRemoteState
+    ? mergeSharedStateWithPersonTombstones(migratedRemoteState, localState, { deferTombstones: true })
+    : localState;
+  applyHardDeleteOperations(state, hardDeletes, { recoveryState: migratedRemoteState });
+  applyPersonTombstones(state);
+  if (typeof assertNoTombstonedPersonReferences === "function") {
+    assertNoTombstonedPersonReferences(state, migratedRemoteState);
+  }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   throw new Error("STALE_SHARED_STATE");
+}
+
+function applyHardDeleteOperations(nextState, hardDeletes = [], options = {}) {
+  for (const operation of hardDeletes || []) {
+    if (!Array.isArray(nextState[operation.collection])) continue;
+    const references = operation.personType
+      ? getManagedPersonReferences(nextState, operation.personType, operation.id)
+      : [];
+    if (references.length) {
+      const details = references.map((reference) => `${reference.label} ${reference.count}件`).join("、");
+      const error = new Error("PERSON_REFERENCED");
+      error.code = "PERSON_REFERENCED";
+      error.userMessage = `${details} から参照されているため削除を取り消しました。`;
+      error.recoveryState = options.recoveryState
+        ? applyPersonTombstones(clone(options.recoveryState))
+        : removeFailedHardDeleteArtifacts(nextState, operation);
+      error.hardDeleteOperations = [operation];
+      throw error;
+    }
+    if (operation.personType) {
+      removeManagedPersonRecord(nextState, operation.personType, operation.id);
+    } else {
+      nextState[operation.collection] = nextState[operation.collection]
+        .filter((item) => String(item.id) !== String(operation.id));
+    }
+    sanitizeManagedPersonHistory(nextState, operation.personType, operation.id);
+  }
+  return nextState;
+}
+
+function removeFailedHardDeleteArtifacts(nextState, operation) {
+  const tombstones = normalizePersonTombstones(nextState.meta?.[PERSON_TOMBSTONES_META_KEY]).filter((tombstone) => {
+    const samePerson = tombstone.person_type === operation.personType && String(tombstone.person_id) === String(operation.id);
+    return !samePerson || tombstone.deleted_at !== operation.deletedAt;
+  });
+  nextState.meta = { ...(nextState.meta || {}), [PERSON_TOMBSTONES_META_KEY]: tombstones };
+  nextState.histories = (nextState.histories || []).filter((history) => {
+    return !(
+      history.target_type === operation.historyTargetType
+      && String(history.target_id) === String(operation.id)
+      && history.changed_at === operation.deletedAt
+      && history.after_payload?.deleted === true
+    );
+  });
+  return applyPersonTombstones(nextState);
+}
+
+function sanitizeManagedPersonHistory(nextState, personType, personId) {
+  if (personType !== "host") return nextState;
+  nextState.histories = (nextState.histories || []).map((history) => {
+    if (history.target_type !== "user" || String(history.target_id) !== String(personId)) return history;
+    return {
+      ...history,
+      before_payload: removeHostPhotoData(history.before_payload),
+      after_payload: removeHostPhotoData(history.after_payload),
+    };
+  });
+  return nextState;
+}
+
+function removeHostPhotoData(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const sanitized = { ...payload };
+  delete sanitized.photo_data_url;
+  delete sanitized.photo_name;
+  return sanitized;
 }
 
 function archiveEndedEvents() {
@@ -669,7 +993,8 @@ function render() {
   const selectedEvent = findEvent(state, view.eventId);
   if (!selectedEvent || isEventArchived(selectedEvent)) view.eventId = getDefaultEventId();
   if (view.archiveEventId && !findEvent(state, view.archiveEventId)) view.archiveEventId = "";
-  if (!findUser(state, view.attendanceUserId)) view.attendanceUserId = getActiveUsers(state)[0]?.id || "";
+  const selectedAttendanceUser = findUser(state, view.attendanceUserId);
+  if (!selectedAttendanceUser || selectedAttendanceUser.is_active === false) view.attendanceUserId = getActiveUsers(state)[0]?.id || "";
   const selectedStaffMember = findStaffMember(state, view.staffAttendanceMemberId);
   if (!selectedStaffMember || selectedStaffMember.is_active === false) view.staffAttendanceMemberId = getActiveStaffMembers(state)[0]?.id || "";
   if (view.editingReservationRequestId && !(state.reservation_requests || []).some((request) => request.id === view.editingReservationRequestId && !request.is_deleted)) {
@@ -774,8 +1099,9 @@ function renderSiteLogin() {
 
 function navButton(page, label) {
   const icon = NAV_ICONS[page] || "□";
+  const active = view.page === page;
   return `
-    <button class="nav-button ${view.page === page ? "is-active" : ""}" data-action="navigate" data-page="${escapeAttr(page)}" type="button">
+    <button class="nav-button ${active ? "is-active" : ""}" data-action="navigate" data-page="${escapeAttr(page)}" type="button" ${active ? 'aria-current="page"' : ""}>
       <span class="nav-icon" aria-hidden="true">${icon}</span>
       <span>${escapeHtml(label)}</span>
     </button>
@@ -1771,7 +2097,7 @@ function renderAdminPage() {
             ${renderEventOptions(view.eventId)}
           </select>
         </label>
-        <div class="side-nav">
+        <nav class="side-nav" aria-label="運営メニュー">
           ${adminGroupButton("sales")}
           ${adminTabButton("events", "イベント日")}
           ${adminTabButton("hosts", "ホスト一覧")}
@@ -1780,7 +2106,7 @@ function renderAdminPage() {
           ${adminTabButton("archive", "アーカイブ")}
           ${adminTabButton("histories", "変更履歴")}
           ${adminTabButton("data", "データ")}
-        </div>
+        </nav>
         <div class="sidebar-store-card">
           <div class="sidebar-store-lockup">
             ${ACTIVE_STORE_THEME.logoPath ? `<img src="${escapeAttr(ACTIVE_STORE_THEME.logoPath)}" alt="${escapeAttr(`${ACTIVE_STORE_THEME.name} ロゴ`)}">` : ""}
@@ -1824,7 +2150,7 @@ function adminGroupButton(groupKey) {
   const active = group.items.some(([tab]) => view.adminTab === tab);
   const icon = ADMIN_TAB_ICONS[groupKey] || "□";
   return `
-    <button class="side-button side-group-button ${active ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(group.defaultTab)}" type="button">
+    <button class="side-button side-group-button ${active ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(group.defaultTab)}" type="button" ${active ? 'aria-current="page"' : ""}>
       <span class="side-icon" aria-hidden="true">${icon}</span>
       <span class="side-button-label">
         <strong>${escapeHtml(group.label)}</strong>
@@ -1836,8 +2162,9 @@ function adminGroupButton(groupKey) {
 
 function adminTabButton(tab, label) {
   const icon = ADMIN_TAB_ICONS[tab] || "□";
+  const active = view.adminTab === tab;
   return `
-    <button class="side-button ${view.adminTab === tab ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(tab)}" type="button">
+    <button class="side-button ${active ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(tab)}" type="button" ${active ? 'aria-current="page"' : ""}>
       <span class="side-icon" aria-hidden="true">${icon}</span>
       <span>${escapeHtml(label)}</span>
     </button>
@@ -1883,7 +2210,7 @@ function renderAdminSectionTabs(groupKey) {
       </div>
       <div class="tab-switch admin-tab-switch">
         ${group.items.map(([tab, label]) => `
-          <button class="tab-button ${view.adminTab === tab ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(tab)}" type="button">
+          <button class="tab-button ${view.adminTab === tab ? "is-active" : ""}" data-action="admin-tab" data-tab="${escapeAttr(tab)}" type="button" ${view.adminTab === tab ? 'aria-current="page"' : ""}>
             ${escapeHtml(label)}
           </button>
         `).join("")}
@@ -2045,6 +2372,213 @@ function renderAdminMissing() {
   `;
 }
 
+const MANAGED_PERSON_TYPES = {
+  host: {
+    collection: "users",
+    label: "ホスト",
+    historyTargetType: "user",
+    missingMessage: "対象ホストが見つかりません。",
+  },
+  staff: {
+    collection: "staff_members",
+    label: "内勤",
+    historyTargetType: "staff_member",
+    missingMessage: "対象内勤が見つかりません。",
+  },
+};
+
+function getManagedPersonReferences(state, personType, personId) {
+  const id = String(personId);
+  const references = [];
+  const addReference = (collection, label, count) => references.push({ collection, label, count });
+
+  if (personType === "host") {
+    if ((state.attendance_entries || []).some((entry) => String(entry.user_id) === id)) {
+      addReference("attendance_entries", "勤怠", state.attendance_entries.filter((entry) => String(entry.user_id) === id).length);
+    }
+    if ((state.long_vacations || []).some((vacation) => String(vacation.user_id) === id)) {
+      addReference("long_vacations", "長期休暇", state.long_vacations.filter((vacation) => String(vacation.user_id) === id).length);
+    }
+  } else if (personType === "staff") {
+    if ((state.staff_attendance_entries || []).some((entry) => String(entry.staff_member_id) === id)) {
+      addReference("staff_attendance_entries", "内勤勤怠", state.staff_attendance_entries.filter((entry) => String(entry.staff_member_id) === id).length);
+    }
+  }
+
+  if ((state.reservations || []).some((reservation) => String(reservation.host_user_id) === id)) {
+    addReference("reservations", "予約", state.reservations.filter((reservation) => String(reservation.host_user_id) === id).length);
+  }
+  if ((state.reservation_requests || []).some((request) => String(request.host_user_id) === id)) {
+    addReference("reservation_requests", "予約受付", state.reservation_requests.filter((request) => String(request.host_user_id) === id).length);
+  }
+  if ((state.drink_plans || []).some((plan) => String(plan.host_user_id) === id)) {
+    addReference("drink_plans", "酒類予定", state.drink_plans.filter((plan) => String(plan.host_user_id) === id).length);
+  }
+  if ((state.instance_assignments || []).some((assignment) => {
+    return assignment.person_type === personType && String(assignment.person_id) === id;
+  })) {
+    addReference("instance_assignments", "インスタンス振り分け", state.instance_assignments.filter((assignment) => {
+      return assignment.person_type === personType && String(assignment.person_id) === id;
+    }).length);
+  }
+  return references;
+}
+
+function findManagedPersonByType(state, personType, personId) {
+  const collection = personType === "host" ? state.users : state.staff_members;
+  return (collection || []).find((person) => String(person.id) === String(personId)) || null;
+}
+
+function hasManagedPersonTombstone(state, personType, personId) {
+  return normalizePersonTombstones(state.meta?.[PERSON_TOMBSTONES_META_KEY]).some((tombstone) => {
+    return tombstone.person_type === personType && String(tombstone.person_id) === String(personId);
+  });
+}
+
+function createHardDeleteConflict(state, operation, message, code = "HARD_DELETE_CONFLICT") {
+  const error = new Error(code);
+  error.code = code;
+  error.userMessage = message;
+  error.recoveryState = applyPersonTombstones(clone(state));
+  error.hardDeleteOperations = [operation];
+  return error;
+}
+
+function validateHardDeletePreconditions(latestState, operation) {
+  if (hasManagedPersonTombstone(latestState, operation.personType, operation.id)) return { completed: true };
+  const person = findManagedPersonByType(latestState, operation.personType, operation.id);
+  const label = operation.personType === "host" ? "ホスト" : "内勤";
+  if (!person) {
+    throw createHardDeleteConflict(latestState, operation, `削除処理中の${label}が共有DBで見つからないため、削除を中止しました。`);
+  }
+  if (person.is_active !== false) {
+    throw createHardDeleteConflict(latestState, operation, `${person.display_name} は削除処理中に有効化されたため、削除を中止しました。`);
+  }
+  if (getManagedPersonVersion(person) !== operation.expectedVersion) {
+    throw createHardDeleteConflict(latestState, operation, `${person.display_name} の情報が削除処理中に更新されたため、削除を中止しました。`);
+  }
+  const references = getManagedPersonReferences(latestState, operation.personType, operation.id);
+  if (references.length) {
+    const details = references.map((reference) => `${reference.label} ${reference.count}件`).join("、");
+    throw createHardDeleteConflict(latestState, operation, `${person.display_name} は ${details} から参照されたため、削除を中止しました。`, "PERSON_REFERENCED");
+  }
+  return { completed: false, person };
+}
+
+function assertNoTombstonedPersonReferences(nextState, recoveryState = null) {
+  const conflicts = [];
+  for (const tombstone of normalizePersonTombstones(nextState.meta?.[PERSON_TOMBSTONES_META_KEY])) {
+    const references = getManagedPersonReferences(nextState, tombstone.person_type, tombstone.person_id);
+    if (references.length) conflicts.push({ tombstone, references });
+  }
+  if (!conflicts.length) return nextState;
+  const details = conflicts.flatMap(({ tombstone, references }) => {
+    const label = tombstone.person_type === "host" ? "削除済みホスト" : "削除済み内勤";
+    return references.map((reference) => `${label}ID ${tombstone.person_id}: ${reference.label} ${reference.count}件`);
+  }).join("、");
+  const error = new Error("TOMBSTONED_PERSON_REFERENCED");
+  error.code = "TOMBSTONED_PERSON_REFERENCED";
+  error.userMessage = `古い端末から削除済み人物への参照が送信されたため保存を拒否しました。最新状態を読み込み直しました。${details}`;
+  error.recoveryState = applyPersonTombstones(clone(recoveryState || nextState));
+  throw error;
+}
+
+function removeTombstonedPersonReferences(nextState) {
+  const hostIds = new Set();
+  const staffIds = new Set();
+  for (const tombstone of normalizePersonTombstones(nextState.meta?.[PERSON_TOMBSTONES_META_KEY])) {
+    (tombstone.person_type === "host" ? hostIds : staffIds).add(String(tombstone.person_id));
+  }
+  if (!hostIds.size && !staffIds.size) return nextState;
+
+  nextState.attendance_entries = (nextState.attendance_entries || []).filter((entry) => !hostIds.has(String(entry.user_id)));
+  nextState.long_vacations = (nextState.long_vacations || []).filter((vacation) => !hostIds.has(String(vacation.user_id)));
+  nextState.staff_attendance_entries = (nextState.staff_attendance_entries || []).filter((entry) => !staffIds.has(String(entry.staff_member_id)));
+  const deletedPersonIds = new Set([...hostIds, ...staffIds]);
+  nextState.reservations = (nextState.reservations || []).filter((reservation) => !deletedPersonIds.has(String(reservation.host_user_id)));
+  nextState.reservation_requests = (nextState.reservation_requests || []).filter((request) => !deletedPersonIds.has(String(request.host_user_id)));
+  nextState.drink_plans = (nextState.drink_plans || []).filter((plan) => !deletedPersonIds.has(String(plan.host_user_id)));
+  nextState.instance_assignments = (nextState.instance_assignments || []).filter((assignment) => {
+    const deletedIds = assignment.person_type === "host" ? hostIds : assignment.person_type === "staff" ? staffIds : null;
+    return !deletedIds || !deletedIds.has(String(assignment.person_id));
+  });
+  return nextState;
+}
+
+function removeManagedPersonRecord(state, personType, personId) {
+  const id = String(personId);
+  if (personType === "host") {
+    state.users = (state.users || []).filter((user) => String(user.id) !== id);
+  } else if (personType === "staff") {
+    state.staff_members = (state.staff_members || []).filter((staffMember) => String(staffMember.id) !== id);
+  }
+}
+
+function renderManagedPersonStatus(person) {
+  return person.is_active !== false
+    ? `<span class="inline-pill active">有効</span>`
+    : `<span class="inline-pill muted">無効</span>`;
+}
+
+function deleteManagedPerson(sourceState, personType, personId, now = new Date()) {
+  const config = MANAGED_PERSON_TYPES[personType];
+  if (!config) return { state: sourceState, ok: false, errors: ["削除対象の種別が不正です。"] };
+  const person = (sourceState[config.collection] || []).find((item) => String(item.id) === String(personId));
+  if (!person) return { state: sourceState, ok: false, errors: [config.missingMessage] };
+  if (person.is_active !== false) {
+    return { state: sourceState, ok: false, errors: [`${config.label}を削除する前に無効化してください。`] };
+  }
+
+  const references = getManagedPersonReferences(sourceState, personType, person.id);
+  if (references.length) {
+    const details = references.map((reference) => `${reference.label} ${reference.count}件`).join("、");
+    return {
+      state: sourceState,
+      ok: false,
+      errors: [`${person.display_name} は ${details} から参照されているため削除できません。無効のまま残してください。`],
+      person,
+      references,
+    };
+  }
+
+  const draft = clone(sourceState);
+  const stamp = new Date(now).toISOString();
+  const historyPerson = removeHostPhotoData(clone(person));
+  const hardDeletes = [{
+    collection: config.collection,
+    id: person.id,
+    personType,
+    historyTargetType: config.historyTargetType,
+    deletedAt: stamp,
+    expectedVersion: typeof getManagedPersonVersion === "function"
+      ? getManagedPersonVersion(person)
+      : (person.updated_at || JSON.stringify(person)),
+    personSnapshot: historyPerson,
+  }];
+  applyHardDeleteOperations(draft, hardDeletes);
+  draft.histories ||= [];
+  draft.histories.unshift({
+    id: createId("hist"),
+    target_type: config.historyTargetType,
+    target_id: person.id,
+    before_payload: historyPerson,
+    after_payload: { deleted: true },
+    changed_at: stamp,
+    change_note: `${config.label}を完全削除`,
+  });
+  draft.histories = draft.histories.slice(0, 300);
+  draft.meta = {
+    ...(draft.meta || {}),
+    updated_at: stamp,
+    [PERSON_TOMBSTONES_META_KEY]: normalizePersonTombstones([
+      ...(draft.meta?.[PERSON_TOMBSTONES_META_KEY] || []),
+      { person_type: personType, person_id: person.id, deleted_at: stamp },
+    ]),
+  };
+  applyPersonTombstones(draft);
+  return { state: draft, ok: true, person, references: [], hardDeletes, errors: [] };
+}
+
 function renderHostManagement() {
   const editing = view.editingUserId ? findUser(state, view.editingUserId) : null;
   const users = sortedUsers(state.users);
@@ -2088,35 +2622,39 @@ function renderHostManagement() {
           `).join("")}
         </div>
       </div>
-      ${renderHostManagementTable(activeUsers, "有効なホストがいません。")}
-      <details class="mini-panel collapsed-hosts">
-        <summary>無効化済みホスト <strong>${inactiveUsers.length}</strong>人</summary>
-        ${renderHostManagementTable(inactiveUsers, "無効化済みホストはいません。")}
+      ${renderHostManagementTable(activeUsers, "有効なホストがいません。", "有効なホスト一覧")}
+      <details class="mini-panel collapsed-hosts" data-inactive-person-type="host" ${view.expandedInactivePersonType === "host" ? "open" : ""}>
+        <summary><span class="collapsed-hosts-summary-content">無効化済みホスト <strong>${inactiveUsers.length}</strong>人</span></summary>
+        ${renderHostManagementTable(inactiveUsers, "無効化済みホストはいません。", "無効化済みホスト一覧")}
       </details>
     </section>
   `;
 }
 
-function renderHostManagementTable(users, emptyText) {
+function renderHostManagementTable(users, emptyText, caption = "ホスト一覧") {
   return `
     <div class="table-wrap">
       <table class="data-table">
-        <thead><tr><th>宣材</th><th>ホスト名</th><th>読み</th><th>ロール</th><th>状態</th><th>メモ</th><th>操作</th></tr></thead>
+        <caption class="visually-hidden">${escapeHtml(caption)}</caption>
+        <thead><tr><th scope="col">宣材</th><th scope="col">ホスト名</th><th scope="col">読み</th><th scope="col">ロール</th><th scope="col">状態</th><th scope="col">メモ</th><th scope="col">操作</th></tr></thead>
         <tbody>
           ${users.length ? users.map((user) => `
-            <tr>
+            <tr class="managed-person-row" data-managed-person-id="${escapeHtml(user.id)}" tabindex="-1">
               <td>${renderHostPhotoUploader(user)}</td>
-              <td>${escapeHtml(user.display_name)}</td>
+              <${"th"} scope="row">${escapeHtml(user.display_name)}</${"th"}>
               <td>${escapeHtml(user.kana || "")}</td>
               <td>${escapeHtml(user.role)}</td>
-              <td>${user.is_active !== false ? `<span class="inline-pill active">有効</span>` : `<span class="inline-pill muted">無効</span>`}</td>
+              <td>${renderManagedPersonStatus(user)}</td>
               <td>${escapeHtml(user.note || "")}</td>
               <td>
                 <div class="row-actions">
-                  <button class="icon-button" data-action="edit-user" data-user-id="${user.id}" type="button">編集</button>
+                  <button class="icon-button" data-action="edit-user" data-user-id="${escapeHtml(user.id)}" type="button" aria-label="${escapeHtml(`${user.display_name}を編集`)}">編集</button>
                   ${user.is_active !== false
-                    ? `<button class="icon-button danger" data-action="disable-user" data-user-id="${user.id}" type="button">無効化</button>`
-                    : `<button class="icon-button save" data-action="enable-user" data-user-id="${user.id}" type="button">有効化</button>`}
+                    ? `<button class="icon-button danger" data-action="disable-user" data-user-id="${escapeHtml(user.id)}" type="button" aria-label="${escapeHtml(`${user.display_name}を無効化`)}">無効化</button>`
+                    : `
+                      <button class="icon-button save" data-action="enable-user" data-user-id="${escapeHtml(user.id)}" type="button" aria-label="${escapeHtml(`${user.display_name}を有効化`)}">有効化</button>
+                      <button class="icon-button danger" data-action="delete-user" data-user-id="${escapeHtml(user.id)}" type="button" aria-label="${escapeHtml(`${user.display_name}を完全削除`)}">削除</button>
+                    `}
                 </div>
               </td>
             </tr>
@@ -2491,6 +3029,8 @@ function renderStaffManagement() {
     ? state.staff_members.find((member) => member.id === view.editingStaffMemberId)
     : null;
   const staffMembers = sortedStaffMembers(state.staff_members || []);
+  const activeStaffMembers = staffMembers.filter((member) => member.is_active !== false);
+  const inactiveStaffMembers = staffMembers.filter((member) => member.is_active === false);
   return `
     <section class="panel page-panel">
       <div class="panel-heading">
@@ -2507,31 +3047,45 @@ function renderStaffManagement() {
         <button class="primary-button" type="submit">${editing ? "更新する" : "追加する"}</button>
       </form>
       <div class="notice muted">ホスト一覧とは別管理です。ここに登録した人だけが「内勤出勤」の対象になります。</div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead><tr><th>内勤名</th><th>読み</th><th>区分</th><th>状態</th><th>メモ</th><th>操作</th></tr></thead>
-          <tbody>
-            ${staffMembers.map((member) => `
-              <tr>
-                <td>${escapeHtml(member.display_name)}</td>
-                <td>${escapeHtml(member.kana || "")}</td>
-                <td>${escapeHtml(member.staff_type || "内勤")}</td>
-                <td>${member.is_active ? `<span class="inline-pill active">有効</span>` : `<span class="inline-pill muted">無効</span>`}</td>
-                <td>${escapeHtml(member.note || "")}</td>
-                <td>
-                  <div class="row-actions">
-                    <button class="icon-button" data-action="edit-staff-member" data-staff-member-id="${member.id}" type="button">編集</button>
-                    ${member.is_active
-                      ? `<button class="icon-button danger" data-action="disable-staff-member" data-staff-member-id="${member.id}" type="button">無効化</button>`
-                      : `<button class="icon-button save" data-action="enable-staff-member" data-staff-member-id="${member.id}" type="button">有効化</button>`}
-                  </div>
-                </td>
-              </tr>
-            `).join("") || `<tr><td colspan="6">内勤スタッフは未登録です。</td></tr>`}
-          </tbody>
-        </table>
-      </div>
+      ${renderStaffManagementTable(activeStaffMembers, "有効な内勤スタッフがいません。", "有効な内勤一覧")}
+      <details class="mini-panel collapsed-hosts" data-inactive-person-type="staff" ${view.expandedInactivePersonType === "staff" ? "open" : ""}>
+        <summary><span class="collapsed-hosts-summary-content">無効化済み内勤 <strong>${inactiveStaffMembers.length}</strong>人</span></summary>
+        ${renderStaffManagementTable(inactiveStaffMembers, "無効化済み内勤はいません。", "無効化済み内勤一覧")}
+      </details>
     </section>
+  `;
+}
+
+function renderStaffManagementTable(staffMembers, emptyText, caption = "内勤一覧") {
+  return `
+    <div class="table-wrap">
+      <table class="data-table">
+        <caption class="visually-hidden">${escapeHtml(caption)}</caption>
+        <thead><tr><th scope="col">内勤名</th><th scope="col">読み</th><th scope="col">区分</th><th scope="col">状態</th><th scope="col">メモ</th><th scope="col">操作</th></tr></thead>
+        <tbody>
+          ${staffMembers.length ? staffMembers.map((member) => `
+            <tr class="managed-person-row" data-managed-person-id="${escapeHtml(member.id)}" tabindex="-1">
+              <${"th"} scope="row">${escapeHtml(member.display_name)}</${"th"}>
+              <td>${escapeHtml(member.kana || "")}</td>
+              <td>${escapeHtml(member.staff_type || "内勤")}</td>
+              <td>${renderManagedPersonStatus(member)}</td>
+              <td>${escapeHtml(member.note || "")}</td>
+              <td>
+                <div class="row-actions">
+                  <button class="icon-button" data-action="edit-staff-member" data-staff-member-id="${escapeHtml(member.id)}" type="button" aria-label="${escapeHtml(`${member.display_name}を編集`)}">編集</button>
+                  ${member.is_active !== false
+                    ? `<button class="icon-button danger" data-action="disable-staff-member" data-staff-member-id="${escapeHtml(member.id)}" type="button" aria-label="${escapeHtml(`${member.display_name}を無効化`)}">無効化</button>`
+                    : `
+                      <button class="icon-button save" data-action="enable-staff-member" data-staff-member-id="${escapeHtml(member.id)}" type="button" aria-label="${escapeHtml(`${member.display_name}を有効化`)}">有効化</button>
+                      <button class="icon-button danger" data-action="delete-staff-member" data-staff-member-id="${escapeHtml(member.id)}" type="button" aria-label="${escapeHtml(`${member.display_name}を完全削除`)}">削除</button>
+                    `}
+                </div>
+              </td>
+            </tr>
+          `).join("") : `<tr><td colspan="6">${escapeHtml(emptyText)}</td></tr>`}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -3226,6 +3780,35 @@ function syncReservationAttributeControls(container) {
   });
 }
 
+function renderAndFocusEditForm(formSelector) {
+  render();
+  window.requestAnimationFrame(() => {
+    const form = root.querySelector(formSelector);
+    if (!form) return;
+    form.scrollIntoView({ block: "start", behavior: "smooth" });
+    form.querySelector("input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled])")
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function revealInactiveManagedPerson(personType, personId) {
+  view.expandedInactivePersonType = personType;
+  render();
+  window.requestAnimationFrame(() => {
+    const details = root.querySelector(`.collapsed-hosts[data-inactive-person-type="${personType}"]`);
+    if (!details) return;
+    details.open = true;
+    window.requestAnimationFrame(() => {
+      const row = [...details.querySelectorAll("[data-managed-person-id]")]
+        .find((item) => item.dataset.managedPersonId === personId);
+      const target = row || details.querySelector("summary");
+      if (!target) return;
+      target.scrollIntoView({ block: row ? "center" : "start", behavior: "smooth" });
+      target.focus({ preventScroll: true });
+    });
+  });
+}
+
 function handleClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -3274,8 +3857,7 @@ function handleClick(event) {
   if (action === "delete-reservation") deleteReservationFromRow(button);
   if (action === "edit-reservation-request") {
     view.editingReservationRequestId = button.dataset.requestId || "";
-    render();
-    window.setTimeout(() => root.querySelector(".reservation-request-form")?.scrollIntoView({ block: "start", behavior: "smooth" }), 0);
+    renderAndFocusEditForm(".reservation-request-form");
     return;
   }
   if (action === "new-reservation-request") {
@@ -3306,11 +3888,11 @@ function handleClick(event) {
   if (action === "admin-save-staff-attendance") saveAdminStaffAttendance(button);
   if (action === "edit-user") {
     view.editingUserId = button.dataset.userId;
-    render();
+    renderAndFocusEditForm("form[data-action='save-user']");
   }
   if (action === "edit-staff-member") {
     view.editingStaffMemberId = button.dataset.staffMemberId;
-    render();
+    renderAndFocusEditForm("form[data-action='save-staff-member']");
   }
   if (action === "disable-staff-member") {
     disableStaffMemberFromButton(button);
@@ -3330,6 +3912,14 @@ function handleClick(event) {
     applyResult(result, "ホストを有効化しました。");
     return;
   }
+  if (action === "delete-user") {
+    deleteUserFromButton(button);
+    return;
+  }
+  if (action === "delete-staff-member") {
+    deleteStaffMemberFromButton(button);
+    return;
+  }
   if (action === "delete-role") {
     deleteRoleFromButton(button);
     return;
@@ -3344,7 +3934,7 @@ function handleClick(event) {
   }
   if (action === "edit-vacation") {
     view.editingVacationId = button.dataset.vacationId;
-    render();
+    renderAndFocusEditForm("form[data-action='save-vacation']");
   }
   if (action === "new-vacation") {
     view.editingVacationId = "";
@@ -3352,7 +3942,7 @@ function handleClick(event) {
   }
   if (action === "edit-event") {
     view.editingEventId = button.dataset.eventId;
-    render();
+    renderAndFocusEditForm("form[data-action='save-event']");
   }
   if (action === "new-event") {
     view.editingEventId = "";
@@ -3373,7 +3963,8 @@ function disableUserFromButton(button) {
   if (!ok) return;
   const result = setUserActive(state, user.id, false);
   if (result.ok && view.editingUserId === user.id) view.editingUserId = "";
-  applyResult(result, "ホストを無効化しました。");
+  applyResult(result, `${user.display_name}を無効化し、「無効化済みホスト」へ移動しました。`);
+  if (result.ok) revealInactiveManagedPerson("host", user.id);
 }
 
 function deleteRoleFromButton(button) {
@@ -3397,7 +3988,58 @@ function disableStaffMemberFromButton(button) {
   if (!ok) return;
   const result = setStaffMemberActive(state, staffMember.id, false);
   if (result.ok && view.editingStaffMemberId === staffMember.id) view.editingStaffMemberId = "";
-  applyResult(result, "内勤を無効化しました。");
+  applyResult(result, `${staffMember.display_name}を無効化し、「無効化済み内勤」へ移動しました。`);
+  if (result.ok) revealInactiveManagedPerson("staff", staffMember.id);
+}
+
+function deleteUserFromButton(button) {
+  const user = findUser(state, button.dataset.userId);
+  if (!user) {
+    showToast("対象ホストが見つかりません。", "error");
+    return;
+  }
+  if (user.is_active !== false) {
+    showToast("ホストを削除する前に無効化してください。", "error");
+    return;
+  }
+  deleteManagedPersonFromButton(button, "host", user);
+}
+
+function deleteStaffMemberFromButton(button) {
+  const staffMember = findStaffMember(state, button.dataset.staffMemberId);
+  if (!staffMember) {
+    showToast("対象内勤が見つかりません。", "error");
+    return;
+  }
+  if (staffMember.is_active !== false) {
+    showToast("内勤を削除する前に無効化してください。", "error");
+    return;
+  }
+  deleteManagedPersonFromButton(button, "staff", staffMember);
+}
+
+function deleteManagedPersonFromButton(button, personType, person) {
+  const result = deleteManagedPerson(state, personType, person.id);
+  if (!result.ok) {
+    showToast((result.errors || ["削除できませんでした。"]).join(" / "), "error");
+    return;
+  }
+
+  const config = MANAGED_PERSON_TYPES[personType];
+  const photoNotice = personType === "host" && result.person.photo_data_url
+    ? "登録済みの宣材写真データも削除されます。"
+    : "";
+  const message = `${result.person.display_name} を完全に削除します。この操作は元に戻せません。${photoNotice}`;
+  if (!window.confirm(message)) return;
+
+  if (personType === "host") {
+    if (view.editingUserId === result.person.id) view.editingUserId = "";
+    if (view.attendanceUserId === result.person.id) view.attendanceUserId = "";
+  } else {
+    if (view.editingStaffMemberId === result.person.id) view.editingStaffMemberId = "";
+    if (view.staffAttendanceMemberId === result.person.id) view.staffAttendanceMemberId = "";
+  }
+  saveState(result.state, `${config.label}を完全に削除しました。`, { hardDeletes: result.hardDeletes });
 }
 
 function handleSubmit(event) {
@@ -3644,6 +4286,11 @@ async function saveReservationFromRow(button) {
   const adminMode = view.page === "admin";
   button.disabled = true;
   try {
+    const localHostReferenceError = getReservationHostReferenceError(state, payload.host_user_id);
+    if (localHostReferenceError) {
+      showToast(localHostReferenceError, "error");
+      return;
+    }
     if (syncStatus.mode === "supabase") {
       const result = await saveReservationToSharedState(payload, adminMode);
       if (!result.ok) {
@@ -3673,6 +4320,12 @@ async function saveReservationToSharedState(payload, adminMode) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const record = await loadSharedRecord();
     const latestState = record.state ? migrateState(record.state) : state;
+    const hostReferenceError = getReservationHostReferenceError(latestState, payload.host_user_id);
+    if (hostReferenceError) {
+      state = latestState;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      return { ok: false, state: latestState, errors: [hostReferenceError] };
+    }
     const conflict = getReservationSaveConflict(latestState, payload);
     if (conflict) {
       state = latestState;
@@ -3686,6 +4339,11 @@ async function saveReservationToSharedState(payload, adminMode) {
     }
     const result = upsertReservation(latestState, payload, { admin: adminMode, strictDuplicate: true });
     if (!result.ok) return result;
+    try {
+      assertNoTombstonedPersonReferences(result.state, latestState);
+    } catch (error) {
+      return { ok: false, state: latestState, errors: [error.userMessage || "削除済み人物への参照は保存できません。"] };
+    }
     try {
       await saveSharedState(result.state, { expectedUpdatedAt: record.updatedAt });
       return result;
@@ -3704,6 +4362,17 @@ async function saveReservationToSharedState(payload, adminMode) {
     state: latestState,
     errors: ["他の端末で先に更新されました。最新状態を読み込みました。もう一度確認してください。"],
   };
+}
+
+function getReservationHostReferenceError(latestState, hostUserId) {
+  if (!hostUserId) return "";
+  if (hasManagedPersonTombstone(latestState, "host", hostUserId)) {
+    return "削除済みのホストが担当に指定されているため、予約を保存できません。最新状態を読み込みました。";
+  }
+  if (!findUser(latestState, hostUserId)) {
+    return "共有DBに存在しないホストが担当に指定されているため、予約を保存できません。最新状態を読み込みました。";
+  }
+  return "";
 }
 
 function formatReservationConflictMessage(conflict) {

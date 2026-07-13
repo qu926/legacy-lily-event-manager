@@ -43,6 +43,8 @@ export const RESERVATION_REQUEST_IVAN_CAPACITY_PER_INSTANCE = 2;
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 const STORAGE_VERSION = 1;
+const HISTORY_LIMIT = 300;
+const EVENT_DELETE_HISTORY_NOTE = "アーカイブを完全削除";
 const DEFAULT_INITIAL_ROLES = [...ROLES];
 const DEFAULT_INITIAL_USERS = [
   { id: "u_manager", display_name: "運営サンプル", kana: "うんえいさんぷる", role: "幹部" },
@@ -187,15 +189,51 @@ function mergeByKey(remoteItems = [], localItems = [], keyFn) {
   return [...merged.values()];
 }
 
-function mergeHistory(remoteItems = [], localItems = []) {
-  return mergeByKey(remoteItems, localItems, (item) => item.id || `${item.target_type}:${item.target_id}:${item.changed_at}:${item.change_note}`)
-    .sort((a, b) => String(b.changed_at || "").localeCompare(String(a.changed_at || "")))
-    .slice(0, 300);
+function mergeHistory(remoteItems = [], localItems = [], eventTombstones = []) {
+  const histories = mergeByKey(remoteItems, localItems, (item) => item.id || `${item.target_type}:${item.target_id}:${item.changed_at}:${item.change_note}`)
+    .sort((a, b) => String(b.changed_at || "").localeCompare(String(a.changed_at || "")));
+  const tombstones = normalizeEventTombstones(eventTombstones);
+  if (!tombstones.length) return histories.slice(0, HISTORY_LIMIT);
+
+  const tombstoneByEventId = new Map(tombstones.map((tombstone) => [String(tombstone.event_id), tombstone]));
+  const deletionHistoryByEventId = new Map();
+  const ordinaryHistories = [];
+  for (const history of histories) {
+    const eventId = String(history?.target_id ?? "");
+    const tombstone = history?.target_type === "event" ? tombstoneByEventId.get(eventId) : null;
+    if (!tombstone) {
+      ordinaryHistories.push(history);
+      continue;
+    }
+    if (history.after_payload?.deleted === true
+      && history.changed_at === tombstone.deleted_at
+      && !deletionHistoryByEventId.has(eventId)) {
+      deletionHistoryByEventId.set(eventId, history);
+    }
+  }
+
+  const deletionHistories = tombstones.map((tombstone) => {
+    const existing = deletionHistoryByEventId.get(String(tombstone.event_id));
+    if (!existing) return createEventDeletionAuditHistory(tombstone);
+    return tombstone.event_snapshot
+      ? { ...existing, before_payload: tombstone.event_snapshot }
+      : existing;
+  }).sort((a, b) => String(b.changed_at || "").localeCompare(String(a.changed_at || "")));
+
+  // Tombstones cannot be capped without allowing stale event resurrection, so their audit rows
+  // are the only histories allowed to exceed the normal limit when more than 300 exist.
+  const ordinaryLimit = Math.max(0, HISTORY_LIMIT - deletionHistories.length);
+  return [...deletionHistories, ...ordinaryHistories.slice(0, ordinaryLimit)]
+    .sort((a, b) => String(b.changed_at || "").localeCompare(String(a.changed_at || "")));
 }
 
 export function mergeSharedState(remoteState, localState) {
   const remote = clone(remoteState || {});
   const local = clone(localState || {});
+  const eventTombstones = normalizeEventTombstones([
+    ...(remote.meta?.event_tombstones || []),
+    ...(local.meta?.event_tombstones || []),
+  ]);
   const merged = {
     ...remote,
     ...local,
@@ -204,6 +242,7 @@ export function mergeSharedState(remoteState, localState) {
       ...(remote.meta || {}),
       ...(local.meta || {}),
       updated_at: updatedTime(local.meta) >= updatedTime(remote.meta) ? local.meta?.updated_at : remote.meta?.updated_at,
+      event_tombstones: eventTombstones,
     },
   };
 
@@ -229,7 +268,7 @@ export function mergeSharedState(remoteState, localState) {
   merged.instance_assignments = mergeByKey(remote.instance_assignments, local.instance_assignments, (item) => {
     return item.event_date_id && item.person_type && item.person_id ? `${item.event_date_id}:${item.person_type}:${item.person_id}` : item.id;
   });
-  merged.histories = mergeHistory(remote.histories, local.histories);
+  merged.histories = mergeHistory(remote.histories, local.histories, eventTombstones);
   return merged;
 }
 
@@ -324,6 +363,157 @@ export function archiveFinishedEvents(state, now = new Date()) {
   }
   if (changed) touch(draft, stamp);
   return { state: changed ? draft : state, changed };
+}
+
+export function deleteArchivedEvent(state, eventId, now = new Date()) {
+  const event = (state?.event_dates || []).find((item) => String(item.id) === String(eventId));
+  if (!event) return { state, ok: false, errors: ["削除対象のイベント日が見つかりません。"] };
+  if (!isEventArchived(event, now)) {
+    return { state, ok: false, errors: ["アーカイブされていないイベント日は削除できません。"] };
+  }
+
+  const stamp = new Date(now).toISOString();
+  const eventSnapshot = clone(event);
+  const eventAuditSnapshot = createEventDeletionAuditSnapshot(eventSnapshot, event.id);
+  const relatedCollections = [
+    ["attendance_entries", "attendance"],
+    ["staff_attendance_entries", "staff_attendance"],
+    ["reservations", "reservation"],
+    ["reservation_settings", "reservation_setting"],
+    ["reservation_requests", "reservation_request"],
+    ["drink_plans", "drink_plan"],
+    ["instance_assignments", "instance_assignment"],
+  ];
+  const relatedRecords = Object.fromEntries(relatedCollections.map(([collection]) => {
+    const records = (state[collection] || []).filter((item) => String(item.event_date_id) === String(event.id));
+    return [collection, records];
+  }));
+  const fingerprint = createEventDeleteFingerprint(eventSnapshot, relatedRecords);
+  const relatedRecordIds = Object.fromEntries(relatedCollections.map(([collection]) => {
+    return [collection, relatedRecords[collection]
+      .map((item) => item.id)
+      .filter((id) => id !== undefined && id !== null && String(id) !== "")];
+  }));
+  const eventDelete = {
+    eventId: event.id,
+    deletedAt: stamp,
+    expectedVersion: event.updated_at || event.created_at || fingerprint,
+    fingerprint,
+    eventSnapshot,
+    relatedRecordIds,
+  };
+
+  const draft = clone(state);
+  draft.event_dates = (draft.event_dates || []).filter((item) => String(item.id) !== String(event.id));
+  for (const [collection] of relatedCollections) {
+    draft[collection] = (draft[collection] || []).filter((item) => {
+      return String(item.event_date_id) !== String(event.id);
+    });
+  }
+
+  const removedHistoryTargets = new Set([`event:${String(event.id)}`]);
+  for (const [collection, targetType] of relatedCollections) {
+    for (const record of relatedRecords[collection]) {
+      if (record.id === undefined || record.id === null || String(record.id) === "") continue;
+      removedHistoryTargets.add(`${targetType}:${String(record.id)}`);
+    }
+  }
+  draft.histories = (draft.histories || []).filter((history) => {
+    const targetKey = `${history.target_type}:${String(history.target_id)}`;
+    if (removedHistoryTargets.has(targetKey)) return false;
+    return !historyPayloadReferencesEvent(history.before_payload, event.id)
+      && !historyPayloadReferencesEvent(history.after_payload, event.id);
+  });
+
+  draft.meta = {
+    ...(draft.meta || {}),
+    event_tombstones: normalizeEventTombstones([
+      ...(draft.meta?.event_tombstones || []),
+      {
+        event_id: event.id,
+        deleted_at: stamp,
+        event_snapshot: eventAuditSnapshot,
+      },
+    ]),
+  };
+  pushHistory(draft, "event", event.id, eventAuditSnapshot, { deleted: true }, stamp, EVENT_DELETE_HISTORY_NOTE);
+  touch(draft, stamp);
+  return { state: draft, ok: true, event: eventSnapshot, eventDelete, errors: [] };
+}
+
+function historyPayloadReferencesEvent(payload, eventId) {
+  return payload && typeof payload === "object"
+    && String(payload.event_date_id) === String(eventId);
+}
+
+function normalizeEventTombstones(tombstones) {
+  const byEvent = new Map();
+  for (const tombstone of Array.isArray(tombstones) ? tombstones : []) {
+    const eventId = String(tombstone?.event_id ?? "").trim();
+    const deletedAt = typeof tombstone?.deleted_at === "string" ? tombstone.deleted_at : "";
+    if (!eventId || !Number.isFinite(Date.parse(deletedAt))) continue;
+    const normalized = { event_id: eventId, deleted_at: deletedAt };
+    const eventSnapshot = createEventDeletionAuditSnapshot(tombstone?.event_snapshot, eventId);
+    if (eventSnapshot) normalized.event_snapshot = eventSnapshot;
+    const current = byEvent.get(eventId);
+    if (!current || Date.parse(deletedAt) > Date.parse(current.deleted_at)) {
+      byEvent.set(eventId, normalized);
+      continue;
+    }
+    if (Date.parse(deletedAt) === Date.parse(current.deleted_at) && eventSnapshot) {
+      const mergedSnapshot = createEventDeletionAuditSnapshot({
+        ...(current.event_snapshot || {}),
+        ...eventSnapshot,
+      }, eventId);
+      byEvent.set(eventId, { ...current, event_snapshot: mergedSnapshot });
+    }
+  }
+  return [...byEvent.values()].sort((a, b) => a.event_id.localeCompare(b.event_id));
+}
+
+function createEventDeletionAuditSnapshot(event, eventId) {
+  if (!event || typeof event !== "object") return null;
+  const snapshot = { id: String(eventId) };
+  for (const field of ["event_date", "label", "status"]) {
+    if (typeof event[field] === "string" && event[field].trim()) snapshot[field] = event[field];
+  }
+  return snapshot;
+}
+
+function createEventDeletionAuditHistory(tombstone) {
+  const eventId = String(tombstone.event_id);
+  return {
+    id: `hist_event_delete:${eventId}:${tombstone.deleted_at}`,
+    target_type: "event",
+    target_id: eventId,
+    before_payload: tombstone.event_snapshot || { id: eventId },
+    after_payload: { deleted: true },
+    changed_at: tombstone.deleted_at,
+    change_note: EVENT_DELETE_HISTORY_NOTE,
+  };
+}
+
+function createEventDeleteFingerprint(event, relatedRecords) {
+  const related = Object.fromEntries(Object.entries(relatedRecords).map(([collection, records]) => {
+    const normalized = records.map(canonicalizeFingerprintValue);
+    normalized.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    return [collection, normalized];
+  }));
+  const serialized = JSON.stringify(canonicalizeFingerprintValue({ event, related }));
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function canonicalizeFingerprintValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeFingerprintValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => {
+    return [key, canonicalizeFingerprintValue(value[key])];
+  }));
 }
 
 export function buildDefaultState(baseDate = new Date()) {
@@ -1664,7 +1854,7 @@ function pushHistory(draft, target_type, target_id, before_payload, after_payloa
     changed_at,
     change_note,
   });
-  draft.histories = draft.histories.slice(0, 300);
+  draft.histories = draft.histories.slice(0, HISTORY_LIMIT);
 }
 
 function touch(draft, stamp) {

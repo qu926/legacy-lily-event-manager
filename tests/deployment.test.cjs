@@ -6,6 +6,7 @@ const { test } = require("node:test");
 
 require("./ui-regression.test.cjs");
 require("./member-lifecycle.test.cjs");
+require("./archive-deletion.test.cjs");
 
 const root = path.resolve(__dirname, "..");
 const slug = "legacy-lily-event-manager";

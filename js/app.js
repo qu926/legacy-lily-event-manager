@@ -18,6 +18,7 @@ import {
   clone,
   configureCore,
   createId,
+  deleteArchivedEvent,
   deleteDrinkPlan,
   deleteReservation,
   deleteReservationRequest,
@@ -134,7 +135,17 @@ const LOCAL_STORAGE_VERSION = String(APP_CONFIG.localStorageVersion || "v1").tri
 const STORAGE_KEY = `${APP_ID}:state:${LOCAL_STORAGE_VERSION}`;
 const PENDING_LOCAL_CHANGES_KEY = `${APP_ID}:pending-local-changes`;
 const PENDING_HARD_DELETES_KEY = `${APP_ID}:pending-hard-deletes`;
+const PENDING_EVENT_DELETES_KEY = `${APP_ID}:pending-event-deletes`;
 const PERSON_TOMBSTONES_META_KEY = "person_tombstones";
+const EVENT_DELETE_RELATED_COLLECTIONS = [
+  ["attendance_entries", "attendance"],
+  ["staff_attendance_entries", "staff_attendance"],
+  ["reservations", "reservation"],
+  ["reservation_settings", "reservation_setting"],
+  ["reservation_requests", "reservation_request"],
+  ["drink_plans", "drink_plan"],
+  ["instance_assignments", "instance_assignment"],
+];
 const SITE_SESSION_KEY = `${APP_ID}:site-unlocked`;
 const ADMIN_SESSION_KEY = `${APP_ID}:admin-unlocked`;
 const BRAND_NAME = String(APP_CONFIG.brandName);
@@ -323,10 +334,20 @@ function migrateState(saved) {
     meta: {
       ...fresh.meta,
       ...(saved.meta || {}),
-      [PERSON_TOMBSTONES_META_KEY]: normalizePersonTombstones(saved.meta?.[PERSON_TOMBSTONES_META_KEY]),
+      person_tombstones: typeof normalizePersonTombstones === "function"
+        ? normalizePersonTombstones(saved.meta?.person_tombstones)
+        : (saved.meta?.person_tombstones || []),
+      event_tombstones: typeof normalizeEventTombstones === "function"
+        ? normalizeEventTombstones(saved.meta?.event_tombstones)
+        : (saved.meta?.event_tombstones || []),
     },
   };
-  return applyPersonTombstones(migrated);
+  const personTombstonesApplied = typeof applyPersonTombstones === "function"
+    ? applyPersonTombstones(migrated)
+    : migrated;
+  return typeof applyEventTombstones === "function"
+    ? applyEventTombstones(personTombstonesApplied)
+    : personTombstonesApplied;
 }
 
 function normalizePersonTombstones(tombstones) {
@@ -350,14 +371,470 @@ function mergePersonTombstones(...states) {
   return normalizePersonTombstones(states.flatMap((item) => item?.meta?.[PERSON_TOMBSTONES_META_KEY] || []));
 }
 
+function normalizeEventTombstones(tombstones) {
+  const byEvent = new Map();
+  for (const tombstone of Array.isArray(tombstones) ? tombstones : []) {
+    const eventId = String(tombstone?.event_id ?? "").trim();
+    const deletedAt = typeof tombstone?.deleted_at === "string" ? tombstone.deleted_at : "";
+    if (!eventId || !Number.isFinite(Date.parse(deletedAt))) continue;
+    const normalized = { event_id: eventId, deleted_at: deletedAt };
+    const eventSnapshot = createEventDeletionAuditSnapshot(tombstone?.event_snapshot, eventId);
+    if (eventSnapshot) normalized.event_snapshot = eventSnapshot;
+    const current = byEvent.get(eventId);
+    if (!current || Date.parse(deletedAt) > Date.parse(current.deleted_at)) {
+      byEvent.set(eventId, normalized);
+      continue;
+    }
+    if (Date.parse(deletedAt) === Date.parse(current.deleted_at) && eventSnapshot) {
+      const mergedSnapshot = createEventDeletionAuditSnapshot({
+        ...(current.event_snapshot || {}),
+        ...eventSnapshot,
+      }, eventId);
+      byEvent.set(eventId, { ...current, event_snapshot: mergedSnapshot });
+    }
+  }
+  return [...byEvent.values()].sort((a, b) => a.event_id.localeCompare(b.event_id));
+}
+
+function createEventDeletionAuditSnapshot(event, eventId) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const snapshot = { id: String(eventId) };
+  for (const field of ["event_date", "label", "status"]) {
+    if (typeof event[field] === "string" && event[field].trim()) snapshot[field] = event[field];
+  }
+  return snapshot;
+}
+
+function mergeEventTombstones(...states) {
+  return normalizeEventTombstones(states.flatMap((item) => item?.meta?.event_tombstones || []));
+}
+
+function canonicalizeEventDeleteValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeEventDeleteValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => {
+    return [key, canonicalizeEventDeleteValue(value[key])];
+  }));
+}
+
+function createSharedEventDeleteFingerprint(event, relatedRecords) {
+  // Keep this canonical form in sync with the fingerprint created by core.deleteArchivedEvent.
+  const related = Object.fromEntries(EVENT_DELETE_RELATED_COLLECTIONS.map(([collection]) => {
+    const normalized = (relatedRecords[collection] || []).map(canonicalizeEventDeleteValue);
+    normalized.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    return [collection, normalized];
+  }));
+  const serialized = JSON.stringify(canonicalizeEventDeleteValue({ event, related }));
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function normalizeEventDeleteRelatedRecordIds(relatedRecordIds) {
+  if (!relatedRecordIds || typeof relatedRecordIds !== "object" || Array.isArray(relatedRecordIds)) return null;
+  const normalized = {};
+  for (const [collection] of EVENT_DELETE_RELATED_COLLECTIONS) {
+    const ids = relatedRecordIds[collection];
+    if (!Array.isArray(ids)) return null;
+    const normalizedIds = [];
+    for (const id of ids) {
+      if (!["string", "number"].includes(typeof id) || (typeof id === "number" && !Number.isFinite(id))) return null;
+      const normalizedId = String(id).trim();
+      if (!normalizedId) return null;
+      normalizedIds.push(normalizedId);
+    }
+    normalized[collection] = [...new Set(normalizedIds)].sort((a, b) => a.localeCompare(b));
+  }
+  return normalized;
+}
+
+function normalizeEventDeleteOperation(operation) {
+  if (!operation || typeof operation !== "object" || Array.isArray(operation)) return null;
+  const eventId = String(operation.eventId ?? "").trim();
+  const deletedAt = typeof operation.deletedAt === "string" ? operation.deletedAt : "";
+  const expectedVersion = typeof operation.expectedVersion === "string" ? operation.expectedVersion : "";
+  const fingerprint = typeof operation.fingerprint === "string" ? operation.fingerprint.trim().toLowerCase() : "";
+  const eventSnapshot = operation.eventSnapshot && typeof operation.eventSnapshot === "object" && !Array.isArray(operation.eventSnapshot)
+    ? JSON.parse(JSON.stringify(operation.eventSnapshot))
+    : null;
+  const relatedRecordIds = normalizeEventDeleteRelatedRecordIds(operation.relatedRecordIds);
+  if (
+    !eventId
+    || !Number.isFinite(Date.parse(deletedAt))
+    || !expectedVersion
+    || !/^[0-9a-f]{8}$/.test(fingerprint)
+    || !eventSnapshot
+    || String(eventSnapshot.id) !== eventId
+    || !relatedRecordIds
+  ) return null;
+  const snapshotVersion = eventSnapshot.updated_at || eventSnapshot.created_at || fingerprint;
+  if (String(snapshotVersion) !== expectedVersion) return null;
+  return { eventId, deletedAt, expectedVersion, fingerprint, eventSnapshot, relatedRecordIds };
+}
+
+function getEventDeleteOperationKey(operation) {
+  return `${operation.eventId}:${operation.deletedAt}`;
+}
+
+function inspectPendingEventDeletes() {
+  const raw = localStorage.getItem(PENDING_EVENT_DELETES_KEY);
+  if (raw === null) {
+    return { present: false, corrupted: false, operations: [], invalidOperations: [] };
+  }
+  try {
+    const stored = JSON.parse(raw);
+    const parsed = Array.isArray(stored) ? stored : [stored];
+    const operations = [];
+    const invalidOperations = [];
+    for (const input of parsed) {
+      const operation = normalizeEventDeleteOperation(input);
+      if (operation) operations.push(operation);
+      else invalidOperations.push(input);
+    }
+    return { present: true, corrupted: false, operations, invalidOperations };
+  } catch (error) {
+    console.warn(error);
+    return { present: true, corrupted: true, operations: [], invalidOperations: [] };
+  }
+}
+
+function loadPendingEventDeletes() {
+  return inspectPendingEventDeletes().operations;
+}
+
+function writePendingEventDeletes(operations) {
+  const pending = (operations || []).map(normalizeEventDeleteOperation).filter(Boolean);
+  if (pending.length) localStorage.setItem(PENDING_EVENT_DELETES_KEY, JSON.stringify(pending));
+  else localStorage.removeItem(PENDING_EVENT_DELETES_KEY);
+}
+
+function persistPendingEventDeletes(operations) {
+  const byEvent = new Map(loadPendingEventDeletes().map((operation) => [operation.eventId, operation]));
+  for (const input of operations || []) {
+    const operation = normalizeEventDeleteOperation(input);
+    if (operation) byEvent.set(operation.eventId, operation);
+  }
+  writePendingEventDeletes([...byEvent.values()]);
+}
+
+function removePendingEventDeletes(operations) {
+  const keys = new Set((operations || []).map(getEventDeleteOperationKey));
+  const pending = loadPendingEventDeletes().filter((operation) => !keys.has(getEventDeleteOperationKey(operation)));
+  writePendingEventDeletes(pending);
+}
+
+function collectEventDeleteOperations(options = {}, includePending = false) {
+  const inputs = [
+    ...(includePending ? loadPendingEventDeletes() : []),
+    ...(Array.isArray(options.eventDeletes) ? options.eventDeletes : []),
+    ...(options.eventDelete !== undefined && options.eventDelete !== null ? [options.eventDelete] : []),
+  ];
+  const byEvent = new Map();
+  for (const input of inputs) {
+    const operation = normalizeEventDeleteOperation(input);
+    if (operation) byEvent.set(operation.eventId, operation);
+  }
+  return [...byEvent.values()];
+}
+
+function getRequestedEventDeleteOperations(options = {}) {
+  return [
+    ...(Array.isArray(options.eventDeletes) ? options.eventDeletes : []),
+    ...(options.eventDelete !== undefined && options.eventDelete !== null ? [options.eventDelete] : []),
+  ];
+}
+
+function getEventDeletionTraceIds(nextState) {
+  const eventIds = new Set(normalizeEventTombstones(nextState?.meta?.event_tombstones).map((tombstone) => {
+    return String(tombstone.event_id);
+  }));
+  for (const history of nextState?.histories || []) {
+    if (history.target_type !== "event" || history.after_payload?.deleted !== true) continue;
+    const eventId = String(history.target_id ?? "").trim();
+    if (eventId) eventIds.add(eventId);
+  }
+  return eventIds;
+}
+
+function hasCompletedSharedEventDeletion(sharedState, eventId) {
+  if (normalizeEventTombstones(sharedState?.meta?.event_tombstones).some((tombstone) => {
+    return String(tombstone.event_id) === String(eventId);
+  })) return true;
+  if ((sharedState?.event_dates || []).some((event) => String(event.id) === String(eventId))) return false;
+  return !EVENT_DELETE_RELATED_COLLECTIONS.some(([collection]) => {
+    return (sharedState?.[collection] || []).some((item) => String(item.event_date_id) === String(eventId));
+  });
+}
+
+function findUnverifiedLocalEventDeletionIds(localState, sharedState, pendingOperations = []) {
+  const authorizedEventIds = new Set((pendingOperations || []).map((operation) => String(operation.eventId)));
+  return [...getEventDeletionTraceIds(localState)].filter((eventId) => {
+    return !authorizedEventIds.has(eventId) && !hasCompletedSharedEventDeletion(sharedState, eventId);
+  });
+}
+
+function findSharedAuthoritativeEventDeletionIds(localState, sharedState, pendingOperations = []) {
+  const authorizedEventIds = new Set((pendingOperations || []).map((operation) => String(operation.eventId)));
+  return [...getEventDeletionTraceIds(localState)].filter((eventId) => {
+    return !authorizedEventIds.has(eventId) && hasCompletedSharedEventDeletion(sharedState, eventId);
+  });
+}
+
+function restoreSharedEventDeletionAudit(localState, sharedState, eventIds) {
+  const authoritativeIds = new Set((eventIds || []).map(String));
+  if (!authoritativeIds.size) return localState;
+
+  const restored = clone(localState);
+  const localTombstones = normalizeEventTombstones(restored.meta?.event_tombstones).filter((tombstone) => {
+    return !authoritativeIds.has(String(tombstone.event_id));
+  });
+  const sharedTombstones = normalizeEventTombstones(sharedState?.meta?.event_tombstones).filter((tombstone) => {
+    return authoritativeIds.has(String(tombstone.event_id));
+  });
+  restored.meta = {
+    ...(restored.meta || {}),
+    updated_at: sharedState?.meta?.updated_at || restored.meta?.updated_at,
+    event_tombstones: normalizeEventTombstones([...localTombstones, ...sharedTombstones]),
+  };
+
+  restored.histories = (restored.histories || []).filter((history) => {
+    return !(
+      history.target_type === "event"
+      && authoritativeIds.has(String(history.target_id))
+      && history.after_payload?.deleted === true
+    );
+  });
+  const sharedDeletionHistories = (sharedState?.histories || []).filter((history) => {
+    return history.target_type === "event"
+      && authoritativeIds.has(String(history.target_id))
+      && history.after_payload?.deleted === true;
+  }).map((history) => clone(history));
+  restored.histories.push(...sharedDeletionHistories);
+  return applyEventTombstones(restored);
+}
+
+function getEventDeleteRelatedRecords(latestState, eventId) {
+  return Object.fromEntries(EVENT_DELETE_RELATED_COLLECTIONS.map(([collection]) => {
+    const records = (latestState?.[collection] || []).filter((item) => {
+      return String(item.event_date_id) === String(eventId);
+    });
+    return [collection, records];
+  }));
+}
+
+function getEventDeleteRelatedRecordIds(relatedRecords) {
+  const ids = Object.fromEntries(EVENT_DELETE_RELATED_COLLECTIONS.map(([collection]) => {
+    return [collection, (relatedRecords[collection] || [])
+      .map((item) => item.id)
+      .filter((id) => id !== undefined && id !== null && String(id).trim() !== "")];
+  }));
+  return normalizeEventDeleteRelatedRecordIds(ids);
+}
+
+function eventDeleteRelatedRecordIdsMatch(expectedIds, actualIds) {
+  return EVENT_DELETE_RELATED_COLLECTIONS.every(([collection]) => {
+    const expected = expectedIds[collection] || [];
+    const actual = actualIds[collection] || [];
+    return expected.length === actual.length && expected.every((id, index) => id === actual[index]);
+  });
+}
+
+function createEventDeleteConflict(latestState, operation, message, code = "EVENT_DELETE_CONFLICT") {
+  const error = new Error(code);
+  error.code = code;
+  error.userMessage = `${message} 最新の共有状態を読み込み直しました。`;
+  error.recoveryState = clone(latestState);
+  error.eventDeleteOperation = operation ? clone(operation) : null;
+  error.eventDeleteOperations = operation ? [clone(operation)] : [];
+  error.eventDeleteConflict = {
+    eventId: operation?.eventId || "",
+    reason: code,
+  };
+  return error;
+}
+
+function validateEventDeletePreconditions(latestState, operation) {
+  const event = (latestState?.event_dates || []).find((item) => {
+    return String(item.id) === String(operation.eventId);
+  });
+  if (!event) return { completed: true };
+
+  const eventLabel = event.event_date ? `イベント日 ${event.event_date}` : `イベントID ${operation.eventId}`;
+  if (!isEventArchived(event)) {
+    throw createEventDeleteConflict(
+      latestState,
+      operation,
+      `${eventLabel}が削除確認後にアーカイブから戻されたため、完全削除を中止しました。`,
+      "EVENT_DELETE_NOT_ARCHIVED",
+    );
+  }
+  if (JSON.stringify(canonicalizeEventDeleteValue(event)) !== JSON.stringify(canonicalizeEventDeleteValue(operation.eventSnapshot))) {
+    throw createEventDeleteConflict(
+      latestState,
+      operation,
+      `${eventLabel}が削除確認後に変更されたため、完全削除を中止しました。`,
+      "EVENT_DELETE_EVENT_CHANGED",
+    );
+  }
+
+  const relatedRecords = getEventDeleteRelatedRecords(latestState, operation.eventId);
+  const relatedRecordIds = getEventDeleteRelatedRecordIds(relatedRecords);
+  if (!relatedRecordIds || !eventDeleteRelatedRecordIdsMatch(operation.relatedRecordIds, relatedRecordIds)) {
+    throw createEventDeleteConflict(
+      latestState,
+      operation,
+      `${eventLabel}に紐づくデータが削除確認後に追加または削除されたため、完全削除を中止しました。`,
+      "EVENT_DELETE_RELATED_CHANGED",
+    );
+  }
+
+  const fingerprint = createSharedEventDeleteFingerprint(event, relatedRecords);
+  if (fingerprint !== operation.fingerprint) {
+    throw createEventDeleteConflict(
+      latestState,
+      operation,
+      `${eventLabel}に紐づくデータが削除確認後に変更されたため、完全削除を中止しました。`,
+      "EVENT_DELETE_RELATED_CHANGED",
+    );
+  }
+  const currentVersion = event.updated_at || event.created_at || fingerprint;
+  if (String(currentVersion) !== operation.expectedVersion) {
+    throw createEventDeleteConflict(
+      latestState,
+      operation,
+      `${eventLabel}のバージョンが削除確認後に変更されたため、完全削除を中止しました。`,
+      "EVENT_DELETE_EVENT_CHANGED",
+    );
+  }
+  return { completed: false, event };
+}
+
+function validateEventDeleteOperations(latestState, requestedOperations, operations) {
+  const invalidOperation = (requestedOperations || []).find((operation) => !normalizeEventDeleteOperation(operation));
+  if (invalidOperation) {
+    throw createEventDeleteConflict(
+      latestState,
+      invalidOperation,
+      "イベントの削除確認情報が不正なため、完全削除を中止しました。",
+      "EVENT_DELETE_INVALID",
+    );
+  }
+  for (const operation of operations || []) validateEventDeletePreconditions(latestState, operation);
+}
+
+function classifyEventDeleteOperations(latestState, requestedOperations, operations) {
+  const conflicts = [];
+  for (const input of requestedOperations || []) {
+    if (normalizeEventDeleteOperation(input)) continue;
+    conflicts.push({
+      operation: input,
+      error: createEventDeleteConflict(
+        latestState,
+        input,
+        "イベントの削除確認情報が不正なため、完全削除を中止しました。",
+        "EVENT_DELETE_INVALID",
+      ),
+    });
+  }
+
+  const applicable = [];
+  for (const operation of operations || []) {
+    try {
+      const validation = validateEventDeletePreconditions(latestState, operation);
+      applicable.push({ operation, validation });
+    } catch (error) {
+      if (!error.recoveryState) throw error;
+      conflicts.push({ operation, error });
+    }
+  }
+  return { applicable, conflicts };
+}
+
+function materializePendingEventDelete(nextState, operation) {
+  const eventId = String(operation.eventId);
+  const eventSnapshot = createEventDeletionAuditSnapshot(operation.eventSnapshot, eventId) || { id: eventId };
+  const removedHistoryTargets = new Set();
+
+  nextState.event_dates = (nextState.event_dates || []).filter((event) => String(event.id) !== eventId);
+  for (const [collection, targetType] of EVENT_DELETE_RELATED_COLLECTIONS) {
+    nextState[collection] = (nextState[collection] || []).filter((item) => {
+      if (String(item.event_date_id) !== eventId) return true;
+      if (item.id !== undefined && item.id !== null && String(item.id) !== "") {
+        removedHistoryTargets.add(`${targetType}:${String(item.id)}`);
+      }
+      return false;
+    });
+  }
+
+  const payloadReferencesEvent = (payload) => {
+    return payload && typeof payload === "object" && String(payload.event_date_id) === eventId;
+  };
+  nextState.histories = (nextState.histories || []).filter((history) => {
+    if (removedHistoryTargets.has(`${history.target_type}:${String(history.target_id)}`)) return false;
+    if (history.target_type === "event" && String(history.target_id) === eventId) {
+      return history.after_payload?.deleted === true && history.changed_at === operation.deletedAt;
+    }
+    return !payloadReferencesEvent(history.before_payload) && !payloadReferencesEvent(history.after_payload);
+  });
+
+  const deletionHistory = (nextState.histories || []).find((history) => {
+    return history.target_type === "event"
+      && String(history.target_id) === eventId
+      && history.changed_at === operation.deletedAt
+      && history.after_payload?.deleted === true;
+  });
+  if (deletionHistory) {
+    deletionHistory.before_payload = eventSnapshot;
+  } else {
+    nextState.histories ||= [];
+    nextState.histories.unshift({
+      id: `hist_event_delete:${eventId}:${operation.deletedAt}`,
+      target_type: "event",
+      target_id: eventId,
+      before_payload: eventSnapshot,
+      after_payload: { deleted: true },
+      changed_at: operation.deletedAt,
+      change_note: "アーカイブを完全削除",
+    });
+  }
+
+  const currentMetaUpdatedAt = nextState.meta?.updated_at || "";
+  nextState.meta = {
+    ...(nextState.meta || {}),
+    updated_at: Date.parse(currentMetaUpdatedAt) > Date.parse(operation.deletedAt)
+      ? currentMetaUpdatedAt
+      : operation.deletedAt,
+    event_tombstones: normalizeEventTombstones([
+      ...(nextState.meta?.event_tombstones || []),
+      { event_id: eventId, deleted_at: operation.deletedAt, event_snapshot: eventSnapshot },
+    ]),
+  };
+  return applyEventTombstones(nextState);
+}
+
 function mergeSharedStateWithPersonTombstones(remoteState, localState, options = {}) {
-  const tombstones = mergePersonTombstones(remoteState, localState);
+  const tombstones = typeof mergePersonTombstones === "function"
+    ? mergePersonTombstones(remoteState, localState)
+    : [];
+  const eventTombstones = typeof mergeEventTombstones === "function"
+    ? mergeEventTombstones(remoteState, localState)
+    : [];
   const mergedState = mergeSharedState(remoteState, localState);
   mergedState.meta = {
     ...(mergedState.meta || {}),
-    [PERSON_TOMBSTONES_META_KEY]: tombstones,
+    ...(typeof mergePersonTombstones === "function" ? { person_tombstones: tombstones } : {}),
+    ...(typeof mergeEventTombstones === "function" ? { event_tombstones: eventTombstones } : {}),
   };
-  return options.deferTombstones ? mergedState : applyPersonTombstones(mergedState);
+  if (options.deferTombstones) return mergedState;
+  const personTombstonesApplied = typeof applyPersonTombstones === "function"
+    ? applyPersonTombstones(mergedState)
+    : mergedState;
+  return typeof applyEventTombstones === "function"
+    ? applyEventTombstones(personTombstonesApplied)
+    : personTombstonesApplied;
 }
 
 function applyPersonTombstones(nextState) {
@@ -371,6 +848,48 @@ function applyPersonTombstones(nextState) {
     sanitizeManagedPersonHistory(nextState, tombstone.person_type, tombstone.person_id);
   }
   if (typeof removeTombstonedPersonReferences === "function") removeTombstonedPersonReferences(nextState);
+  return nextState;
+}
+
+function applyEventTombstones(nextState) {
+  const tombstones = normalizeEventTombstones(nextState.meta?.event_tombstones);
+  nextState.meta = {
+    ...(nextState.meta || {}),
+    event_tombstones: tombstones,
+  };
+
+  const deletedAtByEventId = new Map(tombstones.map((tombstone) => [String(tombstone.event_id), tombstone.deleted_at]));
+  if (!deletedAtByEventId.size) return nextState;
+  const payloadReferencesDeletedEvent = (payload) => {
+    return payload && typeof payload === "object"
+      && deletedAtByEventId.has(String(payload.event_date_id));
+  };
+
+  nextState.event_dates = (nextState.event_dates || []).filter((event) => {
+    return !deletedAtByEventId.has(String(event.id));
+  });
+
+  const historyTargets = new Set();
+  for (const [collection, targetType] of EVENT_DELETE_RELATED_COLLECTIONS) {
+    nextState[collection] = (nextState[collection] || []).filter((item) => {
+      if (!deletedAtByEventId.has(String(item.event_date_id))) return true;
+      if (item.id !== undefined && item.id !== null && String(item.id) !== "") {
+        historyTargets.add(`${targetType}:${String(item.id)}`);
+      }
+      return false;
+    });
+  }
+
+  nextState.histories = (nextState.histories || []).filter((history) => {
+    const targetKey = `${history.target_type}:${String(history.target_id)}`;
+    if (historyTargets.has(targetKey)) return false;
+    if (history.target_type === "event" && deletedAtByEventId.has(String(history.target_id))) {
+      return history.after_payload?.deleted === true
+        && history.changed_at === deletedAtByEventId.get(String(history.target_id));
+    }
+    return !payloadReferencesDeletedEvent(history.before_payload)
+      && !payloadReferencesDeletedEvent(history.after_payload);
+  });
   return nextState;
 }
 
@@ -521,9 +1040,55 @@ function getInitialSyncStatus() {
 
 async function initializeSharedState() {
   if (syncStatus.mode !== "supabase") return;
+  const pendingEventDeleteInspection = typeof inspectPendingEventDeletes === "function"
+    ? inspectPendingEventDeletes()
+    : {
+        present: false,
+        corrupted: false,
+        operations: typeof loadPendingEventDeletes === "function" ? loadPendingEventDeletes() : [],
+        invalidOperations: [],
+      };
+  const pendingEventDeletes = pendingEventDeleteInspection.operations;
+  const pendingHardDeletes = typeof loadPendingHardDeletes === "function" ? loadPendingHardDeletes() : [];
   try {
     let record = await loadSharedRecord();
-    const pendingHardDeletes = typeof loadPendingHardDeletes === "function" ? loadPendingHardDeletes() : [];
+    const hasPendingLocalChangesAtStart = localStorage.getItem(PENDING_LOCAL_CHANGES_KEY) === "1";
+    if (record.state && hasStoredLocalState && hasPendingLocalChangesAtStart) {
+      const latestSharedState = migrateState(record.state);
+      const sharedAuthoritativeEventDeleteIds = typeof findSharedAuthoritativeEventDeletionIds === "function"
+        ? findSharedAuthoritativeEventDeletionIds(state, latestSharedState, pendingEventDeletes)
+        : [];
+      if (sharedAuthoritativeEventDeleteIds.length && typeof restoreSharedEventDeletionAudit === "function") {
+        state = restoreSharedEventDeletionAudit(state, latestSharedState, sharedAuthoritativeEventDeleteIds);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+      const unverifiedEventDeleteIds = typeof findUnverifiedLocalEventDeletionIds === "function"
+        ? findUnverifiedLocalEventDeletionIds(state, latestSharedState, pendingEventDeletes)
+        : [];
+      if (unverifiedEventDeleteIds.length) {
+        state = latestSharedState;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        if (pendingEventDeletes.length || pendingHardDeletes.length) {
+          localStorage.setItem(PENDING_LOCAL_CHANGES_KEY, "1");
+        } else {
+          localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
+        }
+        showToast(
+          "イベント削除の保留情報を確認できなかったため、ローカルの削除を破棄して共有DBの最新状態へ復旧しました。",
+          "error",
+        );
+      }
+    }
+    if (
+      (pendingEventDeleteInspection.corrupted || pendingEventDeleteInspection.invalidOperations.length)
+      && typeof writePendingEventDeletes === "function"
+    ) {
+      writePendingEventDeletes(pendingEventDeletes);
+    }
+    if (pendingEventDeletes.length) {
+      await reconcilePendingEventDeletes(pendingEventDeletes);
+      record = await loadSharedRecord();
+    }
     if (record.state && pendingHardDeletes.length) {
       await reconcilePendingHardDeletes(pendingHardDeletes);
       record = await loadSharedRecord();
@@ -559,11 +1124,34 @@ async function initializeSharedState() {
       state = error.recoveryState;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       removePendingHardDeletes(error.hardDeleteOperations || []);
+      if (typeof removePendingEventDeletes === "function") {
+        removePendingEventDeletes(error.eventDeleteOperations || pendingEventDeletes);
+      }
       localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
       showToast(error.userMessage || "共有DBの最新状態を読み込みました。", "error");
     }
     syncStatus = { mode: "error", text: shortSyncError(error, "共有DBに接続できません") };
     render();
+  }
+}
+
+async function reconcilePendingEventDeletes(operations) {
+  const pending = (operations || []).map(normalizeEventDeleteOperation).filter(Boolean);
+  if (!pending.length) return;
+  const result = await saveMergedSharedState(state, {
+    eventDeletes: pending,
+    allowPartialEventDeletes: true,
+  });
+  removePendingEventDeletes(result?.processedEventDeletes || pending);
+  const remainingEventDeletes = loadPendingEventDeletes();
+  const remainingHardDeletes = typeof loadPendingHardDeletes === "function" ? loadPendingHardDeletes() : [];
+  if (remainingEventDeletes.length || remainingHardDeletes.length) {
+    localStorage.setItem(PENDING_LOCAL_CHANGES_KEY, "1");
+  } else {
+    localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
+  }
+  if (result?.eventDeleteConflicts?.length) {
+    showToast(result.eventDeleteConflicts.map((conflict) => conflict.message).join(" / "), "error");
   }
 }
 
@@ -649,7 +1237,22 @@ function materializePendingHardDelete(nextState, operation, latestPerson) {
 }
 
 function hasPersistableMigration(before, after) {
-  return ["users", "staff_members", "event_dates", "reservations", "reservation_settings", "reservation_requests", "drink_plans", "instance_assignments", "histories", "meta"].some((key) => {
+  return [
+    "users",
+    "roles",
+    "staff_members",
+    "long_vacations",
+    "event_dates",
+    "attendance_entries",
+    "staff_attendance_entries",
+    "reservations",
+    "reservation_settings",
+    "reservation_requests",
+    "drink_plans",
+    "instance_assignments",
+    "histories",
+    "meta",
+  ].some((key) => {
     return JSON.stringify(before[key] || []) !== JSON.stringify(after[key] || []);
   });
 }
@@ -704,7 +1307,10 @@ async function loadSharedRecord() {
 
 async function saveSharedState(nextState, options = {}) {
   if (syncStatus.mode !== "supabase") return;
-  if (options.expectedUpdatedAt) return saveSharedStateIfUnchanged(nextState, options.expectedUpdatedAt);
+  const stateToSave = typeof applyEventTombstones === "function"
+    ? applyEventTombstones(nextState)
+    : nextState;
+  if (options.expectedUpdatedAt) return saveSharedStateIfUnchanged(stateToSave, options.expectedUpdatedAt);
   const url = `${APP_CONFIG.supabaseUrl.replace(/\/$/, "")}/rest/v1/app_state`;
   const response = await fetch(url, {
     method: "POST",
@@ -715,7 +1321,7 @@ async function saveSharedState(nextState, options = {}) {
     },
     body: JSON.stringify({
       id: STATE_ROW_ID,
-      payload: nextState,
+      payload: stateToSave,
       updated_at: new Date().toISOString(),
     }),
   });
@@ -752,6 +1358,7 @@ async function saveSharedStateWithRetry(nextState, expectedUpdatedAt = "") {
   let stateToSave = nextState;
   let expected = expectedUpdatedAt;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (typeof applyEventTombstones === "function") applyEventTombstones(stateToSave);
     if (typeof assertNoTombstonedPersonReferences === "function") assertNoTombstonedPersonReferences(stateToSave);
     try {
       await saveSharedState(stateToSave, expected ? { expectedUpdatedAt: expected } : {});
@@ -761,6 +1368,7 @@ async function saveSharedStateWithRetry(nextState, expectedUpdatedAt = "") {
       const record = await loadSharedRecord();
       const latestState = record.state ? migrateState(record.state) : null;
       stateToSave = latestState ? mergeSharedStateWithPersonTombstones(latestState, stateToSave) : applyPersonTombstones(stateToSave);
+      if (typeof applyEventTombstones === "function") applyEventTombstones(stateToSave);
       if (typeof assertNoTombstonedPersonReferences === "function") {
         assertNoTombstonedPersonReferences(stateToSave, latestState);
       }
@@ -779,12 +1387,21 @@ function getSupabaseHeaders() {
 }
 
 function saveState(nextState, message = "保存しました。", options = {}) {
+  if (typeof applyEventTombstones === "function") applyEventTombstones(nextState);
   const hardDeleteByPerson = new Map();
   for (const input of [...loadPendingHardDeletes(), ...(options.hardDeletes || [])]) {
     const operation = normalizePendingHardDeleteOperation(input);
     if (operation) hardDeleteByPerson.set(`${operation.personType}:${operation.id}`, operation);
   }
   const hardDeletes = [...hardDeleteByPerson.values()];
+  const eventDeletes = typeof collectEventDeleteOperations === "function"
+    ? collectEventDeleteOperations(options, true)
+    : [];
+  const requestedEventDeletes = typeof getRequestedEventDeleteOperations === "function"
+    ? getRequestedEventDeleteOperations(options)
+    : [];
+  const deferSharedSuccessToast = syncStatus.mode === "supabase"
+    && (eventDeletes.length > 0 || requestedEventDeletes.length > 0);
   try {
     assertNoTombstonedPersonReferences(nextState, state);
   } catch (error) {
@@ -792,15 +1409,38 @@ function saveState(nextState, message = "保存しました。", options = {}) {
     return;
   }
   if (syncStatus.mode === "supabase" && hardDeletes.length) persistPendingHardDeletes(hardDeletes);
+  if (syncStatus.mode === "supabase" && eventDeletes.length && typeof persistPendingEventDeletes === "function") {
+    persistPendingEventDeletes(eventDeletes);
+  }
   state = nextState;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   if (syncStatus.mode === "supabase") {
     localStorage.setItem(PENDING_LOCAL_CHANGES_KEY, "1");
-    saveMergedSharedState(state, { ...options, hardDeletes })
-      .then(() => {
+    saveMergedSharedState(state, {
+      ...options,
+      hardDeletes,
+      eventDeletes,
+      allowPartialEventDeletes: eventDeletes.length > 0,
+    })
+      .then((result) => {
         removePendingHardDeletes(hardDeletes);
-        localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
-        syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
+        if (typeof removePendingEventDeletes === "function") {
+          removePendingEventDeletes(result?.processedEventDeletes || eventDeletes);
+        }
+        const remainingEventDeletes = typeof loadPendingEventDeletes === "function" ? loadPendingEventDeletes() : [];
+        const remainingHardDeletes = typeof loadPendingHardDeletes === "function" ? loadPendingHardDeletes() : [];
+        if (remainingEventDeletes.length || remainingHardDeletes.length) {
+          localStorage.setItem(PENDING_LOCAL_CHANGES_KEY, "1");
+        } else {
+          localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
+        }
+        if (result?.eventDeleteConflicts?.length) {
+          syncStatus = { mode: "error", text: "一部のイベント削除を中止" };
+          showToast(result.eventDeleteConflicts.map((conflict) => conflict.message).join(" / "), "error");
+        } else {
+          syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
+          if (deferSharedSuccessToast) showToast(message);
+        }
         render();
       })
       .catch((error) => {
@@ -808,7 +1448,14 @@ function saveState(nextState, message = "保存しました。", options = {}) {
         if (error.recoveryState) {
           state = error.recoveryState;
           localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-          removePendingHardDeletes(error.hardDeleteOperations || hardDeletes);
+          if (error.hardDeleteOperations) removePendingHardDeletes(error.hardDeleteOperations);
+          else if (!error.eventDeleteConflict) removePendingHardDeletes(hardDeletes);
+          if (typeof removePendingEventDeletes === "function" && error.eventDeleteConflict) {
+            removePendingEventDeletes(error.eventDeleteOperations || eventDeletes);
+          }
+          if (error.clearPendingEventDeleteStorage && typeof writePendingEventDeletes === "function") {
+            writePendingEventDeletes([]);
+          }
           localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
           showToast(error.userMessage || "参照が追加されたため削除を取り消しました。", "error");
         }
@@ -816,47 +1463,127 @@ function saveState(nextState, message = "保存しました。", options = {}) {
         render();
       });
   }
-  showToast(message);
+  if (!deferSharedSuccessToast) showToast(message);
   render();
 }
 
 async function saveMergedSharedState(localState, options = {}) {
   const hardDeletes = options.hardDeletes || [];
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const allowPartialEventDeletes = options.allowPartialEventDeletes === true;
+  const requestedEventDeletes = typeof getRequestedEventDeleteOperations === "function"
+    ? getRequestedEventDeleteOperations(options)
+    : [];
+  const eventDeletes = typeof collectEventDeleteOperations === "function"
+    ? collectEventDeleteOperations(options)
+    : [];
+  const createResult = (nextState, classification) => ({
+    state: nextState,
+    processedEventDeletes: eventDeletes,
+    successfulEventDeletes: classification.applicable.map((item) => item.operation),
+    conflictedEventDeletes: classification.conflicts.map((item) => item.operation),
+    eventDeleteConflicts: classification.conflicts.map((item) => ({
+      eventId: item.operation?.eventId || "",
+      code: item.error.code,
+      message: item.error.userMessage,
+    })),
+  });
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     const record = await loadSharedRecord();
     const migratedRemoteState = record.state ? migrateState(record.state) : null;
-    for (const operation of hardDeletes) validateHardDeletePreconditions(migratedRemoteState || localState, operation);
-    const mergedState = migratedRemoteState
-      ? mergeSharedStateWithPersonTombstones(migratedRemoteState, localState, { deferTombstones: true })
+    const latestState = migratedRemoteState || localState;
+    const sharedAuthoritativeEventDeleteIds = typeof findSharedAuthoritativeEventDeletionIds === "function"
+      ? findSharedAuthoritativeEventDeletionIds(localState, latestState, eventDeletes)
+      : [];
+    const trustedLocalState = sharedAuthoritativeEventDeleteIds.length
+      && typeof restoreSharedEventDeletionAudit === "function"
+      ? restoreSharedEventDeletionAudit(localState, latestState, sharedAuthoritativeEventDeleteIds)
       : localState;
-    applyHardDeleteOperations(mergedState, hardDeletes, { recoveryState: migratedRemoteState });
+    if (!allowPartialEventDeletes && typeof validateEventDeleteOperations === "function") {
+      validateEventDeleteOperations(latestState, requestedEventDeletes, eventDeletes);
+    }
+    const unverifiedEventDeleteIds = typeof findUnverifiedLocalEventDeletionIds === "function"
+      ? findUnverifiedLocalEventDeletionIds(trustedLocalState, latestState, eventDeletes)
+      : [];
+    const unverifiedConflicts = unverifiedEventDeleteIds.map((eventId) => {
+      const operation = { eventId };
+      const error = createEventDeleteConflict(
+        latestState,
+        operation,
+        "イベント削除の保留情報を確認できないローカル削除があるため、保存を中止しました。",
+        "EVENT_DELETE_PENDING_MISSING",
+      );
+      error.clearPendingEventDeleteStorage = true;
+      error.hardDeleteOperations = [];
+      return { operation, error };
+    });
+    if (unverifiedConflicts.length && !allowPartialEventDeletes) throw unverifiedConflicts[0].error;
+
+    let classification;
+    if (allowPartialEventDeletes && typeof classifyEventDeleteOperations === "function") {
+      classification = classifyEventDeleteOperations(latestState, requestedEventDeletes, eventDeletes);
+      classification.conflicts.push(...unverifiedConflicts);
+    } else {
+      classification = {
+        applicable: eventDeletes.map((operation) => ({ operation, validation: null })),
+        conflicts: [],
+      };
+    }
+    const hardDeleteValidations = hardDeletes.map((operation) => ({
+      operation,
+      validation: validateHardDeletePreconditions(latestState, operation),
+    }));
+
+    let mergedState;
+    if (classification.conflicts.length) {
+      mergedState = clone(latestState);
+      for (const item of hardDeleteValidations) {
+        if (!item.validation.completed) {
+          materializePendingHardDelete(mergedState, item.operation, item.validation.person);
+        }
+      }
+    } else {
+      mergedState = migratedRemoteState
+        ? mergeSharedStateWithPersonTombstones(migratedRemoteState, trustedLocalState, { deferTombstones: true })
+        : trustedLocalState;
+      applyHardDeleteOperations(mergedState, hardDeletes, { recoveryState: migratedRemoteState });
+    }
     applyPersonTombstones(mergedState);
+    if (typeof materializePendingEventDelete === "function") {
+      for (const item of classification.applicable) {
+        materializePendingEventDelete(mergedState, item.operation);
+      }
+    }
+    if (typeof applyEventTombstones === "function") applyEventTombstones(mergedState);
     if (typeof assertNoTombstonedPersonReferences === "function") {
       assertNoTombstonedPersonReferences(mergedState, migratedRemoteState);
+    }
+
+    if (
+      allowPartialEventDeletes
+      && classification.conflicts.length
+      && !classification.applicable.length
+      && !hardDeletes.length
+    ) {
+      state = mergedState;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      return createResult(mergedState, classification);
+    }
+    if (attempt === 3) {
+      state = mergedState;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      throw new Error("STALE_SHARED_STATE");
     }
     try {
       await saveSharedState(mergedState, record.updatedAt ? { expectedUpdatedAt: record.updatedAt } : {});
       state = mergedState;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      return;
+      return createResult(mergedState, classification);
     } catch (error) {
       if (error.code === "STALE_SHARED_STATE") continue;
       throw error;
     }
   }
-  const record = await loadSharedRecord();
-  const migratedRemoteState = record.state ? migrateState(record.state) : null;
-  for (const operation of hardDeletes) validateHardDeletePreconditions(migratedRemoteState || localState, operation);
-  state = migratedRemoteState
-    ? mergeSharedStateWithPersonTombstones(migratedRemoteState, localState, { deferTombstones: true })
-    : localState;
-  applyHardDeleteOperations(state, hardDeletes, { recoveryState: migratedRemoteState });
-  applyPersonTombstones(state);
-  if (typeof assertNoTombstonedPersonReferences === "function") {
-    assertNoTombstonedPersonReferences(state, migratedRemoteState);
-  }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  throw new Error("STALE_SHARED_STATE");
 }
 
 function applyHardDeleteOperations(nextState, hardDeletes = [], options = {}) {
@@ -3238,6 +3965,10 @@ function renderArchiveItem(event) {
           ` : ""}
           ${renderDeletedReservations(deletedReservations)}
           ${renderDeletedReservationRequests(deletedReservationRequests)}
+          <footer class="archive-footer">
+            <p>このイベント日と、紐づく勤怠・予約・集計データを完全に削除します。</p>
+            <button class="danger-button archive-delete-button" data-action="delete-archived-event" data-event-id="${escapeAttr(event.id)}" type="button">完全に削除</button>
+          </footer>
         </div>
       ` : ""}
     </section>
@@ -3853,6 +4584,10 @@ function handleClick(event) {
     render();
     return;
   }
+  if (action === "delete-archived-event") {
+    deleteArchivedEventFromButton(button);
+    return;
+  }
   if (action === "save-reservation") saveReservationFromRow(button);
   if (action === "delete-reservation") deleteReservationFromRow(button);
   if (action === "edit-reservation-request") {
@@ -4040,6 +4775,28 @@ function deleteManagedPersonFromButton(button, personType, person) {
     if (view.staffAttendanceMemberId === result.person.id) view.staffAttendanceMemberId = "";
   }
   saveState(result.state, `${config.label}を完全に削除しました。`, { hardDeletes: result.hardDeletes });
+}
+
+function deleteArchivedEventFromButton(button) {
+  const eventId = button.dataset.eventId || "";
+  const archivedEvent = findEvent(state, eventId);
+  if (!archivedEvent) {
+    showToast("削除対象のイベント日が見つかりません。", "error");
+    return;
+  }
+
+  const message = `${formatDateLabel(archivedEvent.event_date)} を完全に削除します。紐づく勤怠・予約・集計データも削除され、この操作は元に戻せません。`;
+  if (!window.confirm(message)) return;
+
+  const result = deleteArchivedEvent(state, archivedEvent.id);
+  if (!result.ok) {
+    showToast((result.errors || ["イベント日を削除できませんでした。"]).join(" / "), "error");
+    return;
+  }
+  if (view.archiveEventId === archivedEvent.id) view.archiveEventId = "";
+  saveState(result.state, `${formatDateLabel(archivedEvent.event_date)}を完全に削除しました。`, {
+    eventDelete: result.eventDelete,
+  });
 }
 
 function handleSubmit(event) {

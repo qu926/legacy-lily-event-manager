@@ -1211,6 +1211,36 @@ table.data-table tbody tr:last-child th[scope="row"] {
   padding: 14px;
 }
 
+.archive-body > :is(footer, .archive-footer) {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.archive-body > :is(footer, .archive-footer) > :not(button) {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.archive-body > :is(footer, .archive-footer) :is(.danger-button, .archive-delete-button) {
+  min-width: 180px;
+  min-height: 44px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 143, 139, 0.62);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(255, 143, 139, 0.2), rgba(95, 25, 25, 0.24)),
+    rgba(16, 8, 8, 0.74);
+  color: #ffd6d3;
+  padding: 0 18px;
+  font-weight: 700;
+}
+
 .section-title {
   justify-content: space-between;
 }
@@ -1790,6 +1820,23 @@ table.data-table tbody tr:last-child th[scope="row"] {
 
   .archive-toggle .status-pill {
     justify-self: start;
+  }
+
+  .archive-body > :is(footer, .archive-footer) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .archive-body > :is(footer, .archive-footer) > :not(button) {
+    width: 100%;
+    margin-right: 0;
+  }
+
+  .archive-body > :is(footer, .archive-footer) :is(.danger-button, .archive-delete-button) {
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
   }
 
   .data-table {

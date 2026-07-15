@@ -2201,29 +2201,29 @@ function renderReservationRequestSettingForm(eventId, setting) {
     <form class="request-setting-form" data-action="save-reservation-request-setting">
       <input type="hidden" name="event_date_id" value="${escapeAttr(eventId)}">
       <div class="request-setting-copy">
-        <strong>運営用: インスタンス数設定</strong>
-        <span>1インスタンスは通常席8件・アイバン2件です。2インスタンス時は通常席MAXとアイバン枠数を変更できます。</span>
+        <strong>運営用: インスタンス・予約枠設定</strong>
+        <span>インスタンス数にかかわらず、前半・後半の通常席MAXとアイバン枠MAXを指定できます。</span>
       </div>
       <div class="request-setting-controls">
         <label class="request-instance-field">
           <span>インスタンス数</span>
           <select name="instance_count" data-role="request-instance-count">
-            ${option("1", "1インスタンス（通常8 + アイバン2）", setting.instance_count === 1)}
-            ${option("2", "2インスタンス（通常席MAX指定 + アイバン選択）", setting.instance_count === 2)}
+            ${option("1", "1インスタンス（予約枠MAX指定）", setting.instance_count === 1)}
+            ${option("2", "2インスタンス（予約枠MAX指定）", setting.instance_count === 2)}
           </select>
         </label>
         <div class="request-setting-capacities">
           <label>
             <span>前半 通常席MAX</span>
-            <input name="normal_capacity_front" type="number" min="0" max="99" step="1" value="${setting.instance_count === 2 ? setting.normal_capacity_front : 16}">
+            <input name="normal_capacity_front" type="number" min="0" max="99" step="1" value="${setting.normal_capacity_front}">
           </label>
           <label>
             <span>後半 通常席MAX</span>
-            <input name="normal_capacity_back" type="number" min="0" max="99" step="1" value="${setting.instance_count === 2 ? setting.normal_capacity_back : 16}">
+            <input name="normal_capacity_back" type="number" min="0" max="99" step="1" value="${setting.normal_capacity_back}">
           </label>
           <label>
             <span>アイバン枠MAX</span>
-            <select name="ivan_capacity" data-role="request-ivan-capacity" data-current-instance="${setting.instance_count}">
+            <select name="ivan_capacity" data-role="request-ivan-capacity">
               ${option("2", "2枠", setting.ivan_capacity === 2)}
               ${option("4", "4枠", setting.ivan_capacity === 4)}
             </select>
@@ -5010,13 +5010,6 @@ function handleChange(event) {
   if (staffAttendanceMember) {
     view.staffAttendanceMemberId = staffAttendanceMember.value;
     render();
-    return;
-  }
-  const requestInstance = event.target.closest("[data-role='request-instance-count']");
-  if (requestInstance) {
-    const ivanSelect = requestInstance.closest("form")?.querySelector("[data-role='request-ivan-capacity']");
-    if (ivanSelect && requestInstance.value === "1") ivanSelect.value = "2";
-    if (ivanSelect && requestInstance.value === "2" && ivanSelect.dataset.currentInstance !== "2") ivanSelect.value = "4";
     return;
   }
   const reservationPerson = event.target.closest("[data-role='reservation-person-select']");

@@ -923,6 +923,150 @@ test('reservation request prototype supports seat capacities, host limits, and m
   assert.equal(thirdIvan.ok, true);
 });
 
+test('reservation settings preserve explicit single-instance capacities and retain two-instance behavior', () => {
+  let state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+
+  const singleInstance = upsertReservationSetting(
+    state,
+    {
+      event_date_id: event.id,
+      instance_count: 1,
+      normal_capacity_front: 4,
+      normal_capacity_back: 4,
+      ivan_capacity: 2,
+    },
+    '2026-05-03T13:40:00.000Z',
+  );
+  assert.equal(singleInstance.ok, true);
+  state = singleInstance.state;
+
+  assert.equal(singleInstance.setting.normal_capacity_front, 4);
+  assert.equal(singleInstance.setting.normal_capacity_back, 4);
+  assert.equal(singleInstance.setting.ivan_capacity, 2);
+
+  const storedSingleInstance = state.reservation_settings.find(
+    (setting) => String(setting.event_date_id) === String(event.id),
+  );
+  assert.equal(storedSingleInstance.instance_count, 1);
+  assert.equal(storedSingleInstance.normal_capacity_front, 4);
+  assert.equal(storedSingleInstance.normal_capacity_back, 4);
+  assert.equal(storedSingleInstance.ivan_capacity, 2);
+
+  const retrievedSingleInstance = getReservationSetting(state, event.id);
+  assert.equal(retrievedSingleInstance.instance_count, 1);
+  assert.equal(retrievedSingleInstance.normal_capacity_front, 4);
+  assert.equal(retrievedSingleInstance.normal_capacity_back, 4);
+  assert.equal(retrievedSingleInstance.ivan_capacity, 2);
+  assert.equal(getReservationRequestNormalCapacity(state, event.id, TIME_SLOTS[0]), 4);
+  assert.equal(getReservationRequestNormalCapacity(state, event.id, TIME_SLOTS[1]), 4);
+  assert.equal(getReservationRequestIvanCapacity(state, event.id, TIME_SLOTS[0]), 2);
+  assert.equal(getReservationRequestIvanCapacity(state, event.id, TIME_SLOTS[1]), 2);
+  assert.equal(getReservationRequestCapacity(state, event.id, TIME_SLOTS[0]), 6);
+  assert.equal(getReservationRequestCapacity(state, event.id, TIME_SLOTS[1]), 6);
+
+  const singleBuckets = getReservationRequestBuckets(state, event.id);
+  for (const slot of TIME_SLOTS) {
+    assert.equal(singleBuckets[slot].normal.capacity, 4);
+    assert.equal(singleBuckets[slot].ivan.capacity, 2);
+  }
+  const singleSummary = getReservationRequestAcceptanceStatus(state, event.id);
+  assert.equal(singleSummary.reservationCapacity, 12);
+  assert.equal(singleSummary.capacity, 18);
+
+  const twoInstances = upsertReservationSetting(
+    state,
+    {
+      event_date_id: event.id,
+      instance_count: 2,
+      normal_capacity_front: 18,
+      normal_capacity_back: 19,
+      ivan_capacity: 4,
+    },
+    '2026-05-03T13:41:00.000Z',
+  );
+  assert.equal(twoInstances.ok, true);
+  state = twoInstances.state;
+
+  const retrievedTwoInstances = getReservationSetting(state, event.id);
+  assert.equal(retrievedTwoInstances.instance_count, 2);
+  assert.equal(retrievedTwoInstances.normal_capacity_front, 18);
+  assert.equal(retrievedTwoInstances.normal_capacity_back, 19);
+  assert.equal(retrievedTwoInstances.ivan_capacity, 4);
+  assert.equal(getReservationRequestCapacity(state, event.id, TIME_SLOTS[0]), 22);
+  assert.equal(getReservationRequestCapacity(state, event.id, TIME_SLOTS[1]), 23);
+  assert.equal(getReservationRequestAcceptanceStatus(state, event.id).reservationCapacity, 45);
+});
+
+test('reservation setting getter preserves raw single-instance capacities', () => {
+  const state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+  state.reservation_settings = [{
+    id: 'request_setting_raw_single',
+    event_date_id: event.id,
+    instance_count: 1,
+    normal_capacity_front: 4,
+    normal_capacity_back: 4,
+    ivan_capacity: 2,
+    created_at: '2026-05-03T13:00:00.000Z',
+    updated_at: '2026-05-03T13:00:00.000Z',
+  }];
+
+  const setting = getReservationSetting(state, event.id);
+  assert.equal(setting.instance_count, 1);
+  assert.equal(setting.normal_capacity_front, 4);
+  assert.equal(setting.normal_capacity_back, 4);
+  assert.equal(setting.ivan_capacity, 2);
+});
+
+test('shared merge keeps newer single-instance capacities over stale legacy capacities', () => {
+  const base = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(base);
+  const newerRemote = deepClone(base);
+  const staleLocal = deepClone(base);
+
+  newerRemote.reservation_settings = [{
+    id: 'request_setting_shared',
+    event_date_id: event.id,
+    instance_count: 1,
+    normal_capacity_front: 4,
+    normal_capacity_back: 4,
+    ivan_capacity: 2,
+    created_at: '2026-05-03T13:00:00.000Z',
+    updated_at: '2026-05-03T14:00:00.000Z',
+  }];
+  staleLocal.reservation_settings = [{
+    id: 'request_setting_shared',
+    event_date_id: event.id,
+    instance_count: 1,
+    normal_capacity_front: 8,
+    normal_capacity_back: 8,
+    ivan_capacity: 2,
+    created_at: '2026-05-03T13:00:00.000Z',
+    updated_at: '2026-05-03T13:30:00.000Z',
+  }];
+
+  const merged = mergeSharedState(newerRemote, staleLocal);
+  const mergedRaw = merged.reservation_settings.find(
+    (setting) => String(setting.event_date_id) === String(event.id),
+  );
+  assert.equal(mergedRaw.normal_capacity_front, 4);
+  assert.equal(mergedRaw.normal_capacity_back, 4);
+  assert.equal(mergedRaw.ivan_capacity, 2);
+
+  const setting = getReservationSetting(merged, event.id);
+  assert.equal(setting.instance_count, 1);
+  assert.equal(setting.normal_capacity_front, 4);
+  assert.equal(setting.normal_capacity_back, 4);
+  assert.equal(setting.ivan_capacity, 2);
+  assert.equal(getReservationRequestNormalCapacity(merged, event.id, TIME_SLOTS[0]), 4);
+  assert.equal(getReservationRequestNormalCapacity(merged, event.id, TIME_SLOTS[1]), 4);
+  assert.equal(getReservationRequestIvanCapacity(merged, event.id, TIME_SLOTS[0]), 2);
+  assert.equal(getReservationRequestIvanCapacity(merged, event.id, TIME_SLOTS[1]), 2);
+  assert.equal(getReservationRequestCapacity(merged, event.id, TIME_SLOTS[0]), 6);
+  assert.equal(getReservationRequestCapacity(merged, event.id, TIME_SLOTS[1]), 6);
+});
+
 test('reservation request acceptance enforces three hold slots per time slot for hosts', () => {
   let state = buildDefaultState(new Date(2026, 4, 15, 12));
   const event = activeEvent(state);

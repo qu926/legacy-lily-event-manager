@@ -56,6 +56,20 @@ async function loadWindowConfig() {
   return sandbox.window.EVENT_MANAGER_CONFIG;
 }
 
+function functionSource(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `function ${name} must exist`);
+
+  const next = source.indexOf("\nfunction ", start + 1);
+  return source.slice(start, next === -1 ? source.length : next);
+}
+
+function formControlValue(html, tagName, name) {
+  const control = html.match(new RegExp(`<${tagName}\\b(?=[^>]*\\bname=["']${name}["'])[^>]*>`))?.[0];
+  assert.ok(control, `${name} must be rendered`);
+  return control.match(/\bvalue=["']([^"']*)["']/)?.[1];
+}
+
 async function listTextFiles(directory = root) {
   const entries = await fs.readdir(directory, { withFileTypes: true });
   const files = [];
@@ -148,6 +162,78 @@ test("configured Lily logo asset exists and is not empty", async () => {
     assert.ok(stat.isFile(), `${configuredPath} must be a file`);
     assert.ok(stat.size > 0, `${configuredPath} must not be empty`);
   }
+});
+
+test("reservation request UI preserves single-instance capacities when the form is rerendered", async () => {
+  const app = await readText("js", "app.js");
+  const sandbox = {
+    TIME_SLOTS: ["front", "back"],
+    escapeAttr: String,
+    escapeHtml: String,
+    option(value, label, selected) {
+      return `<option value="${value}"${selected ? " selected" : ""}>${label}</option>`;
+    },
+  };
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "reservation-request-renderers",
+  });
+  const rendererNames = [
+    "renderReservationRequestSettingForm",
+    "renderReservationRequestSummaryV2",
+    "renderRequestHoldCapacityPanel",
+    "renderRequestCapacityPanel",
+  ];
+  const script = new vm.Script(`
+    (() => {
+      ${rendererNames.map((name) => functionSource(app, name)).join("\n")}
+      return { renderReservationRequestSettingForm, renderReservationRequestSummaryV2 };
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const renderers = script.runInContext(context, { timeout: 1_000 });
+
+  const twoInstanceHtml = renderers.renderReservationRequestSettingForm("event-1", {
+    instance_count: 2,
+    normal_capacity_front: 18,
+    normal_capacity_back: 19,
+    ivan_capacity: 4,
+  });
+  assert.equal(formControlValue(twoInstanceHtml, "input", "normal_capacity_front"), "18");
+  assert.equal(formControlValue(twoInstanceHtml, "input", "normal_capacity_back"), "19");
+  assert.match(twoInstanceHtml, /<option value="4" selected>/);
+
+  const singleInstanceHtml = renderers.renderReservationRequestSettingForm("event-1", {
+    instance_count: 1,
+    normal_capacity_front: 4,
+    normal_capacity_back: 4,
+    ivan_capacity: 2,
+  });
+  assert.equal(formControlValue(singleInstanceHtml, "input", "normal_capacity_front"), "4");
+  assert.equal(formControlValue(singleInstanceHtml, "input", "normal_capacity_back"), "4");
+  assert.match(singleInstanceHtml, /<option value="2" selected>/);
+
+  const emptySeatBucket = (capacity) => ({ reserved: [], hold: [], capacity });
+  const buckets = {
+    front: { normal: emptySeatBucket(4), ivan: emptySeatBucket(2) },
+    back: { normal: emptySeatBucket(4), ivan: emptySeatBucket(2) },
+  };
+  const summaryHtml = renderers.renderReservationRequestSummaryV2(buckets, {
+    instance_count: 1,
+    normal_capacity_front: 4,
+    normal_capacity_back: 4,
+    ivan_capacity: 2,
+  }, {
+    total: 0,
+    capacity: 18,
+    reservationCapacity: 12,
+    holdCapacity: 6,
+    holdUsed: 0,
+    holdUsedByTimeSlot: { front: 0, back: 0 },
+    holdCapacityByTimeSlot: { front: 3, back: 3 },
+    closed: false,
+  });
+  assert.equal((summaryHtml.match(/<strong>0 \/ 4<\/strong>/g) || []).length, 2);
+  assert.equal((summaryHtml.match(/<strong>0 \/ 2<\/strong>/g) || []).length, 2);
 });
 
 test("repository text contains no legacy template branding", async () => {

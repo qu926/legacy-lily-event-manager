@@ -92,7 +92,7 @@ import {
   upsertUser,
   upsertVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js";
+} from "./core.js?v=reservation-capacity-20260715";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;

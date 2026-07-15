@@ -1104,13 +1104,14 @@ export function getReservationSetting(state, eventId) {
   const setting = (state.reservation_settings || []).find((item) => String(item.event_date_id) === String(eventId));
   const instanceCount = Number(setting?.instance_count) === 2 ? 2 : 1;
   const defaultNormalCapacity = instanceCount * RESERVATION_REQUEST_NORMAL_CAPACITY_PER_INSTANCE;
+  const defaultIvanCapacity = instanceCount * RESERVATION_REQUEST_IVAN_CAPACITY_PER_INSTANCE;
   return {
     id: setting?.id || `request_setting_${eventId}`,
     event_date_id: eventId,
     instance_count: instanceCount,
-    normal_capacity_front: instanceCount === 2 ? toRequestCapacity(setting?.normal_capacity_front, defaultNormalCapacity) : defaultNormalCapacity,
-    normal_capacity_back: instanceCount === 2 ? toRequestCapacity(setting?.normal_capacity_back, defaultNormalCapacity) : defaultNormalCapacity,
-    ivan_capacity: instanceCount === 2 ? toIvanCapacity(setting?.ivan_capacity, 4) : RESERVATION_REQUEST_IVAN_CAPACITY_PER_INSTANCE,
+    normal_capacity_front: toRequestCapacity(setting?.normal_capacity_front, defaultNormalCapacity),
+    normal_capacity_back: toRequestCapacity(setting?.normal_capacity_back, defaultNormalCapacity),
+    ivan_capacity: toIvanCapacity(setting?.ivan_capacity, defaultIvanCapacity),
     created_at: setting?.created_at || null,
     updated_at: setting?.updated_at || null,
   };
@@ -1192,9 +1193,10 @@ export function upsertReservationSetting(state, input, now = new Date()) {
   if (!event) errors.push("イベント日が見つかりません。");
   const instanceCount = Number(input.instance_count) === 2 ? 2 : 1;
   const defaultNormalCapacity = instanceCount * RESERVATION_REQUEST_NORMAL_CAPACITY_PER_INSTANCE;
-  const normalCapacityFront = instanceCount === 2 ? toRequestCapacity(input.normal_capacity_front, defaultNormalCapacity) : defaultNormalCapacity;
-  const normalCapacityBack = instanceCount === 2 ? toRequestCapacity(input.normal_capacity_back, defaultNormalCapacity) : defaultNormalCapacity;
-  const ivanCapacity = instanceCount === 2 ? toIvanCapacity(input.ivan_capacity, 4) : RESERVATION_REQUEST_IVAN_CAPACITY_PER_INSTANCE;
+  const defaultIvanCapacity = instanceCount * RESERVATION_REQUEST_IVAN_CAPACITY_PER_INSTANCE;
+  const normalCapacityFront = toRequestCapacity(input.normal_capacity_front, defaultNormalCapacity);
+  const normalCapacityBack = toRequestCapacity(input.normal_capacity_back, defaultNormalCapacity);
+  const ivanCapacity = toIvanCapacity(input.ivan_capacity, defaultIvanCapacity);
   if (errors.length) return { state, ok: false, errors };
   const existing = draft.reservation_settings.find((item) => String(item.event_date_id) === String(eventId));
   const before = existing ? clone(existing) : null;

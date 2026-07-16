@@ -236,6 +236,113 @@ test("reservation request UI preserves single-instance capacities when the form 
   assert.equal((summaryHtml.match(/<strong>0 \/ 2<\/strong>/g) || []).length, 2);
 });
 
+test("reservation champagne UI uses branded names without changing legacy count fields", async () => {
+  const app = await readText("js", "app.js");
+  const champagneTypes = [
+    { key: "purple", label: "ナイト 10p" },
+    { key: "red", label: "ロード 30p" },
+    { key: "blue", label: "デューク 50p" },
+    { key: "green", label: "クラウン 120p" },
+  ];
+  const sandbox = {
+    TIME_SLOTS: ["前半", "後半"],
+    REQUEST_TIME_SLOT_LABELS: { 前半: "前半希望", 後半: "後半希望" },
+    RESERVATION_ATTRIBUTE: "リピ",
+    IVAN_ATTRIBUTE: "初回",
+    IVAN_ATTRIBUTES: ["リピ", "初回"],
+    RESERVATION_DRINK_TYPES: champagneTypes,
+    DRINK_PLAN_TYPES: [{ key: "tower", label: "タワー" }, ...champagneTypes],
+    DRINK_LIMITS: Object.fromEntries([
+      { key: "tower", label: "タワー" },
+      ...champagneTypes,
+    ].map(({ key, label }) => [key, { label }])),
+    state: {},
+    clone: (value) => JSON.parse(JSON.stringify(value)),
+    escapeAttr: String,
+    escapeHtml: String,
+    findEvent: () => ({ event_date: "2026-07-18" }),
+    formatDateLabel: () => "7/18（土）",
+    formatHistoryDateTime: String,
+    getReservationPersonName: () => "Host",
+    getReservationPersonOptions: () => [],
+    getReservationWarnings: () => [],
+    getTimeSlotLabel: (value) => value || "",
+    renderAttributeOptions: () => "",
+    option(value, label, selected) {
+      return `<option value="${value}"${selected ? " selected" : ""}>${label}</option>`;
+    },
+  };
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "champagne-ui-renderers",
+  });
+  const rendererNames = [
+    "renderReservationRequestForm",
+    "renderReservationRow",
+    "textCell",
+    "attributeCell",
+    "numberCell",
+    "formatReservationDrinkBreakdown",
+    "formatReservationGuestMeta",
+    "formatGuestAttribute",
+    "summarizeHistoryPayload",
+    "summarizeReservationPayload",
+    "summarizeReservationRequestPayload",
+    "summarizeDrinkPlanPayload",
+    "summarizePayload",
+  ];
+  const script = new vm.Script(`
+    (() => {
+      ${rendererNames.map((name) => functionSource(app, name)).join("\n")}
+      return { renderReservationRequestForm, renderReservationRow, formatReservationDrinkBreakdown, summarizeHistoryPayload };
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const renderers = script.runInContext(context, { timeout: 1_000 });
+  const counts = {
+    purple_count: 1,
+    red_count: 2,
+    blue_count: 3,
+    green_count: 4,
+  };
+
+  const requestHtml = renderers.renderReservationRequestForm("event-1", {}, false, counts);
+  const rowHtml = renderers.renderReservationRow(counts, {
+    eventId: "event-1",
+    timeSlot: "前半",
+    seatType: "通常席",
+    groupNo: "1",
+    noIvanColumn: false,
+    adminMode: true,
+    locked: false,
+  });
+
+  for (const { key, label } of champagneTypes) {
+    assert.ok(requestHtml.includes(`<span>${label}</span>`), `${label} must be shown in the request form`);
+    assert.equal(formControlValue(requestHtml, "input", `${key}_count`), String(counts[`${key}_count`]));
+    assert.ok(rowHtml.includes(`data-label="${label}"`), `${label} must be shown in the reservation grid`);
+    assert.ok(rowHtml.includes(`data-field="${key}_count"`), `${key}_count must remain the stored field name`);
+  }
+
+  assert.equal(
+    renderers.formatReservationDrinkBreakdown({ tower_count: 1, ...counts }),
+    "タワー ×1 / ナイト 10p ×1 / ロード 30p ×2 / デューク 50p ×3 / クラウン 120p ×4",
+  );
+  assert.equal(
+    renderers.summarizeHistoryPayload(
+      { target_type: "drink_plan" },
+      { event_date_id: "event-1", time_slot: "前半", host_user_id: "host-1", item_type: "purple", count: 2 },
+    ),
+    "7/18（土） 前半 / 担当: Host / ナイト 10p ×2",
+  );
+  assert.equal(
+    renderers.summarizeHistoryPayload(
+      { target_type: "reservation_request" },
+      { event_date_id: "event-1", desired_time_slot: "前半", host_user_id: "host-1", purple_count: 1 },
+    ),
+    "7/18（土） 前半希望 / 担当: Host / ナイト 10p ×1",
+  );
+});
+
 test("repository text contains no legacy template branding", async () => {
   const files = await listTextFiles();
 

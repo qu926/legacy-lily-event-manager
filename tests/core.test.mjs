@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   ATTENDANCE_STATUSES,
   DRINK_LIMITS,
+  DRINK_PLAN_TYPES,
   EVENT_STATUSES,
   IVAN_ATTRIBUTE,
   IVAN_ATTRIBUTES,
@@ -1360,6 +1361,41 @@ test('drink totals include accepted reservation requests separately from drink p
     blue: 0,
     green: 0,
   });
+});
+
+test('champagne display names keep the legacy storage keys and limits', () => {
+  const expectedChampagnes = {
+    purple: { label: 'ナイト 10p', limit: 6 },
+    red: { label: 'ロード 30p', limit: 10 },
+    blue: { label: 'デューク 50p', limit: 10 },
+    green: { label: 'クラウン 120p', limit: 20 },
+  };
+
+  assert.deepEqual(Object.keys(DRINK_LIMITS), ['tower', 'purple', 'red', 'blue', 'green']);
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(expectedChampagnes).map((key) => [key, DRINK_LIMITS[key]])),
+    expectedChampagnes,
+  );
+  assert.deepEqual(
+    DRINK_PLAN_TYPES.filter(({ key }) => key !== 'tower'),
+    Object.entries(expectedChampagnes).map(([key, { label }]) => ({ key, label })),
+  );
+
+  const normalized = normalizeReservation({
+    purple_count: 1,
+    red_count: 2,
+    blue_count: 3,
+    green_count: 4,
+  });
+  assert.deepEqual(
+    {
+      purple_count: normalized.purple_count,
+      red_count: normalized.red_count,
+      blue_count: normalized.blue_count,
+      green_count: normalized.green_count,
+    },
+    { purple_count: 1, red_count: 2, blue_count: 3, green_count: 4 },
+  );
 });
 
 test('drink plans can be entered before reservation open and are tracked separately from actual drink totals', () => {

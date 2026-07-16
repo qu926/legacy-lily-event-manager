@@ -31,10 +31,10 @@ export const SLOT_LIMITS = {
 
 export const DRINK_LIMITS = {
   tower: { label: "タワー", limit: 2 },
-  purple: { label: "パープル", limit: 6 },
-  red: { label: "レッド", limit: 10 },
-  blue: { label: "ブルー", limit: 10 },
-  green: { label: "グリーン", limit: 20 },
+  purple: { label: "ナイト 10p", limit: 6 },
+  red: { label: "ロード 30p", limit: 10 },
+  blue: { label: "デューク 50p", limit: 10 },
+  green: { label: "クラウン 120p", limit: 20 },
 };
 export const DRINK_PLAN_TYPES = Object.entries(DRINK_LIMITS).map(([key, value]) => ({ key, label: value.label }));
 export const RESERVATION_REQUEST_HOLD_LIMIT_PER_TIME_SLOT = 3;

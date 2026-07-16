@@ -92,7 +92,7 @@ import {
   upsertUser,
   upsertVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js?v=reservation-capacity-20260715";
+} from "./core.js?v=champagne-labels-20260717";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;
@@ -255,6 +255,11 @@ const ADMIN_TABS = new Set([
   "data",
 ]);
 const RESERVATION_TABS = new Set(["requests", "towers"]);
+const RESERVATION_DRINK_KEYS = ["purple", "red", "blue", "green"];
+const RESERVATION_DRINK_TYPES = RESERVATION_DRINK_KEYS.map((key) => ({
+  key,
+  label: DRINK_LIMITS[key].label,
+}));
 
 let hasStoredLocalState = false;
 let state = loadState();
@@ -2266,10 +2271,7 @@ function renderReservationRequestForm(eventId, setting, locked, editingRequest =
         <label><span>アイバン属性</span><select name="ivan_attribute" data-role="reservation-attribute-select" ${locked ? "disabled" : ""}>${renderAttributeOptions(ivanAttribute, "ivan_attribute")}</select></label>
       </div>
       <div class="request-form-row request-drink-row">
-        <label><span>パープル</span><input name="purple_count" type="number" min="0" step="1" value="${Number(editing.purple_count) || 0}" ${locked ? "disabled" : ""}></label>
-        <label><span>レッド</span><input name="red_count" type="number" min="0" step="1" value="${Number(editing.red_count) || 0}" ${locked ? "disabled" : ""}></label>
-        <label><span>ブルー</span><input name="blue_count" type="number" min="0" step="1" value="${Number(editing.blue_count) || 0}" ${locked ? "disabled" : ""}></label>
-        <label><span>グリーン</span><input name="green_count" type="number" min="0" step="1" value="${Number(editing.green_count) || 0}" ${locked ? "disabled" : ""}></label>
+        ${RESERVATION_DRINK_TYPES.map((item) => `<label><span>${escapeHtml(item.label)}</span><input name="${item.key}_count" type="number" min="0" step="1" value="${Number(editing[`${item.key}_count`]) || 0}" ${locked ? "disabled" : ""}></label>`).join("")}
         <label><span>タワー</span><select name="tower_count" ${locked ? "disabled" : ""}>${option("0", "なし", !Number(editing.tower_count))}${option("1", "あり", Boolean(Number(editing.tower_count)))}</select></label>
       </div>
       <div class="request-form-row request-submit-row">
@@ -2514,13 +2516,7 @@ function renderReservationRequestList(requests, adminMode, locked) {
 }
 
 function formatRequestDrinks(request) {
-  return [
-    request.tower_count ? "タワー" : "",
-    request.purple_count ? `P${request.purple_count}` : "",
-    request.red_count ? `R${request.red_count}` : "",
-    request.blue_count ? `B${request.blue_count}` : "",
-    request.green_count ? `G${request.green_count}` : "",
-  ].filter(Boolean).join(" / ");
+  return formatReservationDrinkBreakdown(request);
 }
 
 function formatPlacementStatus(status) {
@@ -2678,7 +2674,7 @@ function renderTowerRequestDetail(request) {
 function formatReservationDrinkBreakdown(reservation) {
   return DRINK_PLAN_TYPES.map((item) => {
     const count = Number(reservation[item.key === "tower" ? "tower_count" : `${item.key}_count`]) || 0;
-    return count ? `${item.label}${count}` : "";
+    return count ? `${item.label} ×${count}` : "";
   }).filter(Boolean).join(" / ");
 }
 
@@ -2728,7 +2724,7 @@ function renderReservationSection(eventId, timeSlot, seatType, adminMode, locked
       <div class="reservation-grid ${noIvanColumn ? "no-ivan-column" : ""}" role="table">
         <div class="grid-head" role="row">
           <span>組数</span><span>担当</span><span>姫名</span><span>属性</span>${noIvanColumn ? "" : "<span>アイバン名</span><span>属性</span>"}
-          <span>パープル</span><span>レッド</span><span>ブルー</span><span>グリーン</span><span>タワー</span><span>メモ</span><span>操作</span>
+          ${RESERVATION_DRINK_TYPES.map((item) => `<span>${escapeHtml(item.label)}</span>`).join("")}<span>タワー</span><span>メモ</span><span>操作</span>
         </div>
         ${rows}
       </div>
@@ -2768,10 +2764,7 @@ function renderReservationRow(reservation, context) {
       ${attributeCell("attribute", context.noIvanColumn ? "属性" : "姫属性", data.attribute, disabled)}
       ${context.noIvanColumn ? "" : textCell("ivan_name", "アイバン名", data.ivan_name, disabled)}
       ${context.noIvanColumn ? "" : attributeCell("ivan_attribute", "アイバン属性", data.ivan_attribute, disabled)}
-      ${numberCell("purple_count", "パープル", data.purple_count, disabled)}
-      ${numberCell("red_count", "レッド", data.red_count, disabled)}
-      ${numberCell("blue_count", "ブルー", data.blue_count, disabled)}
-      ${numberCell("green_count", "グリーン", data.green_count, disabled)}
+      ${RESERVATION_DRINK_TYPES.map((item) => numberCell(`${item.key}_count`, item.label, data[`${item.key}_count`], disabled)).join("")}
       <label class="grid-cell" data-label="タワー">
         <select data-field="tower_count" ${disabled}>
           ${option("0", "なし", Number(data.tower_count) === 0)}
@@ -4318,13 +4311,7 @@ function renderSeatDetail(slotKey) {
     .filter((groupNo) => !findReservationBySlot(state, view.eventId, timeSlot, seatType, groupNo));
   const items = reservations.map(({ groupNo, reservation }) => {
     const hostName = getReservationPersonName(reservation.host_user_id);
-    const drinks = [
-      reservation.tower_count ? "タワー" : "",
-      reservation.purple_count ? `P${reservation.purple_count}` : "",
-      reservation.red_count ? `R${reservation.red_count}` : "",
-      reservation.blue_count ? `B${reservation.blue_count}` : "",
-      reservation.green_count ? `G${reservation.green_count}` : "",
-    ].filter(Boolean).join(" / ");
+    const drinks = formatReservationDrinkBreakdown(reservation);
     return {
       title: `${groupNo} ${hostName}`,
       meta: [formatReservationGuestMeta(reservation), drinks, reservation.memo].filter(Boolean).join(" / "),
@@ -5916,7 +5903,41 @@ function resetData() {
 
 function summarizeHistoryPayload(history, payload) {
   if (history?.target_type === "reservation") return summarizeReservationPayload(payload);
+  if (history?.target_type === "reservation_request") return summarizeReservationRequestPayload(payload);
+  if (history?.target_type === "drink_plan") return summarizeDrinkPlanPayload(payload);
   return summarizePayload(payload);
+}
+
+function summarizeReservationRequestPayload(payload) {
+  if (!payload) return "-";
+  const event = findEvent(state, payload.event_date_id);
+  const slot = [
+    event ? formatDateLabel(event.event_date) : "",
+    REQUEST_TIME_SLOT_LABELS[payload.desired_time_slot] || payload.desired_time_slot,
+  ].filter(Boolean).join(" ");
+  const hostName = payload.host_user_id ? getReservationPersonName(payload.host_user_id) : "未選択";
+  return [
+    slot,
+    `担当: ${hostName}`,
+    formatReservationGuestMeta(payload),
+    formatReservationDrinkBreakdown(payload),
+    payload.memo ? `メモ: ${payload.memo}` : "",
+    payload.is_deleted ? "削除済み" : "",
+  ].filter(Boolean).join(" / ");
+}
+
+function summarizeDrinkPlanPayload(payload) {
+  if (!payload) return "-";
+  const event = findEvent(state, payload.event_date_id);
+  const itemLabel = DRINK_LIMITS[payload.item_type]?.label || payload.item_type || "未選択";
+  const hostName = payload.host_user_id ? getReservationPersonName(payload.host_user_id) : "未選択";
+  return [
+    [event ? formatDateLabel(event.event_date) : "", getTimeSlotLabel(payload.time_slot)].filter(Boolean).join(" "),
+    `担当: ${hostName}`,
+    `${itemLabel} ×${Number(payload.count) || 0}`,
+    payload.memo ? `メモ: ${payload.memo}` : "",
+    payload.is_deleted ? "削除済み" : "",
+  ].filter(Boolean).join(" / ");
 }
 
 function summarizeReservationPayload(payload) {
@@ -5926,13 +5947,7 @@ function summarizeReservationPayload(payload) {
     .filter(Boolean)
     .join(" ");
   const hostName = payload.host_user_id ? getReservationPersonName(payload.host_user_id) : "未選択";
-  const drinks = [
-    payload.tower_count ? "タワー" : "",
-    payload.purple_count ? `P${payload.purple_count}` : "",
-    payload.red_count ? `R${payload.red_count}` : "",
-    payload.blue_count ? `B${payload.blue_count}` : "",
-    payload.green_count ? `G${payload.green_count}` : "",
-  ].filter(Boolean).join(" ");
+  const drinks = formatReservationDrinkBreakdown(payload);
   return [
     slot,
     `担当: ${hostName}`,

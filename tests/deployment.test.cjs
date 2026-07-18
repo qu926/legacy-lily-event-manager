@@ -70,6 +70,92 @@ function formControlValue(html, tagName, name) {
   return control.match(/\bvalue=["']([^"']*)["']/)?.[1];
 }
 
+function dataRoleSelectOptions(html, dataRole) {
+  const select = html.match(new RegExp(
+    `<select\\b(?=[^>]*\\bdata-role=["']${dataRole}["'])[^>]*>([\\s\\S]*?)<\\/select>`,
+  ));
+  assert.ok(select, `${dataRole} must be rendered`);
+  return [...select[1].matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/g)].map((match) => ({
+    value: match[1].match(/\bvalue=["']([^"']*)["']/)?.[1] || "",
+    label: match[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
+    selected: /\bselected\b/.test(match[1]),
+  }));
+}
+
+function relatedFunctionSources(source, entryName, namePattern) {
+  const names = [...source.matchAll(/^function\s+([A-Za-z_$][\w$]*)\s*\(/gm)]
+    .map((match) => match[1]);
+  const available = new Map(names.map((name) => [name, functionSource(source, name)]));
+  const included = new Set([entryName]);
+  const queue = [entryName];
+
+  while (queue.length) {
+    const current = available.get(queue.shift()) || "";
+    for (const match of current.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const dependency = match[1];
+      if (available.has(dependency) && namePattern.test(dependency) && !included.has(dependency)) {
+        included.add(dependency);
+        queue.push(dependency);
+      }
+    }
+  }
+
+  return [...included]
+    .filter((name) => name !== entryName)
+    .map((name) => available.get(name))
+    .join("\n");
+}
+
+function attendanceFixtureState() {
+  return {
+    users: [
+      { id: "host-blank", display_name: "Blank Host", role: "", is_active: true },
+      { id: "host-standard", display_name: "Standard Host", role: "ホスト", is_active: true },
+      { id: "leader-1", display_name: "Leader One", role: "幹部", is_active: true },
+      { id: "leader-2", display_name: "Leader Two", role: "幹部", is_active: true },
+      { id: "trial-1", display_name: "Trial Host", role: "体入", is_active: true },
+      { id: "inactive-only", display_name: "Inactive Host", role: "休止ロール", is_active: false },
+    ],
+    roles: [
+      { name: "ホスト", is_active: true },
+      { name: "幹部", is_active: true },
+      { name: "体入", is_active: true },
+      { name: "在籍者なし", is_active: true },
+      { name: "休止ロール", is_active: true },
+    ],
+  };
+}
+
+function attendanceSandbox(state, view) {
+  const normalizeRole = (role) => String(role || "").trim() || "ホスト";
+  const getActiveUsers = (targetState = state) => targetState.users.filter((user) => user.is_active !== false);
+  const usersForRole = (targetStateOrRole, maybeRole) => {
+    const targetState = typeof targetStateOrRole === "object" ? targetStateOrRole : state;
+    const role = typeof targetStateOrRole === "object" ? maybeRole : targetStateOrRole;
+    return getActiveUsers(targetState).filter((user) => normalizeRole(user.role) === normalizeRole(role));
+  };
+
+  return {
+    state,
+    view,
+    DEFAULT_ATTENDANCE_ROLE: "ホスト",
+    DEFAULT_HOST_ROLE: "ホスト",
+    HOST_ROLE: "ホスト",
+    ROLES: state.roles.map((role) => role.name),
+    getActiveUsers,
+    getRoles: (targetState = state) => targetState.roles.filter((role) => role.is_active !== false),
+    findUser: (targetState, userId) => targetState.users.find((user) => user.id === userId),
+    getAttendanceRole: normalizeRole,
+    getAttendanceRoleForUser: (user) => normalizeRole(user?.role),
+    getUserAttendanceRole: (user) => normalizeRole(user?.role),
+    normalizeAttendanceRole: normalizeRole,
+    normalizeHostRole: normalizeRole,
+    getAttendanceUsersForRole: usersForRole,
+    getActiveUsersByRole: usersForRole,
+    getUsersForAttendanceRole: usersForRole,
+  };
+}
+
 async function listTextFiles(directory = root) {
   const entries = await fs.readdir(directory, { withFileTypes: true });
   const files = [];
@@ -341,6 +427,221 @@ test("reservation champagne UI uses branded names without changing legacy count 
     ),
     "7/18（土） 前半希望 / 担当: Host / ナイト 10p ×1",
   );
+});
+
+test("host attendance role selection filters active hosts and hides saving until a host is explicit", async () => {
+  const app = await readText("js", "app.js");
+  const state = attendanceFixtureState();
+  const view = { eventId: "event-1", attendanceRole: "ホスト", attendanceUserId: "" };
+  const sandbox = {
+    ...attendanceSandbox(state, view),
+    getActiveEvents: () => [{ id: "event-1", event_date: "2026-07-18", status: "開催" }],
+    findEvent: () => ({ id: "event-1", event_date: "2026-07-18", status: "開催" }),
+    formatDateLabel: () => "7/18（土）",
+    option(value, label, selected) {
+      return `<option value="${value}"${selected ? " selected" : ""}>${label}</option>`;
+    },
+    renderAttendanceSummaryCards: () => "",
+    renderBulkAttendanceRow: () => "<div data-attendance-input-row></div>",
+    renderEventOptions: () => "",
+    renderNameList: () => "",
+    getMissingUsers: () => [],
+    statusPill: () => "",
+  };
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "host-attendance-role-renderer",
+  });
+  const script = new vm.Script(`
+    (() => {
+      ${relatedFunctionSources(app, "renderAttendancePage", /role|AttendanceUser/i)}
+      ${functionSource(app, "renderAttendancePage")}
+      return renderAttendancePage;
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const renderAttendancePage = script.runInContext(context, { timeout: 1_000 });
+
+  const unselectedHtml = renderAttendancePage();
+  const roleOptions = dataRoleSelectOptions(unselectedHtml, "attendance-role-select");
+  assert.deepEqual(
+    new Set(roleOptions.map((item) => item.value)),
+    new Set(["ホスト", "幹部", "体入"]),
+    "roles without active users must not be offered",
+  );
+  assert.match(roleOptions.find((item) => item.value === "ホスト")?.label || "", /2\s*(?:人|名)/);
+  assert.match(roleOptions.find((item) => item.value === "幹部")?.label || "", /2\s*(?:人|名)/);
+  assert.match(roleOptions.find((item) => item.value === "体入")?.label || "", /1\s*(?:人|名)/);
+
+  const hostOptions = dataRoleSelectOptions(unselectedHtml, "attendance-user-select");
+  assert.equal(hostOptions[0]?.value, "", "the host selector must start unselected");
+  assert.deepEqual(
+    hostOptions.filter((item) => item.value).map((item) => item.value),
+    ["host-blank", "host-standard"],
+    "blank roles must be treated as ホスト and inactive hosts must be excluded",
+  );
+  assert.doesNotMatch(unselectedHtml, /bulk-save-button/);
+  assert.doesNotMatch(unselectedHtml, /data-attendance-input-row/);
+
+  view.attendanceUserId = "host-blank";
+  const selectedHtml = renderAttendancePage();
+  assert.match(selectedHtml, /bulk-save-button/);
+  assert.match(selectedHtml, /data-attendance-input-row/);
+  assert.equal(
+    dataRoleSelectOptions(selectedHtml, "attendance-user-select")
+      .find((item) => item.value === "host-blank")?.selected,
+    true,
+  );
+
+  view.attendanceRole = "幹部";
+  view.attendanceUserId = "";
+  const leaderOptions = dataRoleSelectOptions(renderAttendancePage(), "attendance-user-select");
+  assert.deepEqual(
+    leaderOptions.filter((item) => item.value).map((item) => item.value),
+    ["leader-1", "leader-2"],
+  );
+});
+
+test("changing attendance role clears the host until an explicit host change synchronizes it", async () => {
+  const app = await readText("js", "app.js");
+  const state = attendanceFixtureState();
+  const view = { attendanceRole: "ホスト", attendanceUserId: "host-standard" };
+  let renderCount = 0;
+  const sandbox = {
+    ...attendanceSandbox(state, view),
+    render: () => { renderCount += 1; },
+    syncReservationAttributeControls: () => {},
+    saveHostPhotoFromInput: () => {},
+  };
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "host-attendance-role-change-handler",
+  });
+  const script = new vm.Script(`
+    (() => {
+      ${relatedFunctionSources(app, "handleChange", /role|AttendanceUser/i)}
+      ${functionSource(app, "handleChange")}
+      return handleChange;
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const handleChange = script.runInContext(context, { timeout: 1_000 });
+  const changeEvent = (dataRole, value) => {
+    const control = {
+      value,
+      closest(selector) {
+        return selector.includes(`data-role='${dataRole}'`) || selector.includes(`data-role="${dataRole}"`)
+          ? control
+          : null;
+      },
+    };
+    return { target: control };
+  };
+
+  handleChange(changeEvent("attendance-role-select", "幹部"));
+  assert.equal(view.attendanceRole, "幹部");
+  assert.equal(view.attendanceUserId, "", "changing role must not impersonate the first host");
+
+  handleChange(changeEvent("attendance-user-select", "leader-2"));
+  assert.equal(view.attendanceUserId, "leader-2");
+  assert.equal(view.attendanceRole, "幹部");
+
+  handleChange(changeEvent("attendance-role-select", "ホスト"));
+  assert.equal(view.attendanceUserId, "");
+  assert.equal(renderCount, 3);
+});
+
+test("attendance URL state preserves valid users but never substitutes invalid users", async () => {
+  const app = await readText("js", "app.js");
+  const state = attendanceFixtureState();
+  const view = {
+    page: "attendance",
+    adminTab: "dashboard",
+    reservationTab: "requests",
+    eventId: "event-1",
+    archiveEventId: "",
+    attendanceRole: "幹部",
+    attendanceUserId: "leader-2",
+    staffAttendanceMemberId: "",
+    dashboardDetailType: "",
+    dashboardDetailKey: "",
+  };
+  let replacedUrl = "";
+  const window = {
+    location: { hash: "", pathname: "/legacy-lily-event-manager/", search: "" },
+    history: {
+      replaceState(_state, _title, url) {
+        replacedUrl = url;
+      },
+    },
+  };
+  const sandbox = {
+    ...attendanceSandbox(state, view),
+    window,
+    URLSearchParams,
+    VIEW_PAGES: new Set(["attendance", "admin", "reservation"]),
+    ADMIN_TABS: new Set(["dashboard"]),
+    RESERVATION_TABS: new Set(["requests", "towers"]),
+  };
+  const hasReconcile = app.includes("function reconcileAttendanceSelection(");
+  const reconcileSupport = hasReconcile
+    ? relatedFunctionSources(app, "reconcileAttendanceSelection", /role|AttendanceUser/i)
+    : "";
+  const reconcileSource = hasReconcile ? functionSource(app, "reconcileAttendanceSelection") : "";
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "host-attendance-role-location",
+  });
+  const script = new vm.Script(`
+    (() => {
+      ${relatedFunctionSources(app, "restoreViewFromLocation", /role|AttendanceUser/i)}
+      ${reconcileSupport}
+      ${functionSource(app, "restoreViewFromLocation")}
+      ${functionSource(app, "saveViewToLocation")}
+      ${reconcileSource}
+      return {
+        restoreViewFromLocation,
+        saveViewToLocation,
+        reconcileAttendanceSelection: typeof reconcileAttendanceSelection === "function"
+          ? reconcileAttendanceSelection
+          : null,
+      };
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const locationFunctions = script.runInContext(context, { timeout: 1_000 });
+  const restoreAndReconcile = () => {
+    locationFunctions.restoreViewFromLocation();
+    locationFunctions.reconcileAttendanceSelection?.();
+  };
+
+  locationFunctions.saveViewToLocation();
+  const savedParams = new URLSearchParams(replacedUrl.split("#")[1]);
+  assert.equal(savedParams.get("attendanceRole"), "幹部");
+  assert.equal(savedParams.get("attendanceUserId"), "leader-2");
+
+  view.attendanceRole = "ホスト";
+  view.attendanceUserId = "host-standard";
+  window.location.hash = "#page=attendance&eventId=event-1&attendanceRole=%E4%BD%93%E5%85%A5";
+  restoreAndReconcile();
+  assert.equal(view.attendanceRole, "体入");
+  assert.equal(view.attendanceUserId, "", "a role-only URL must require an explicit host choice");
+
+  view.attendanceRole = "ホスト";
+  view.attendanceUserId = "";
+  window.location.hash = "#page=attendance&eventId=event-1&attendanceUserId=leader-1";
+  restoreAndReconcile();
+  assert.equal(view.attendanceUserId, "leader-1", "legacy attendanceUserId-only URLs must retain a valid host");
+  assert.equal(view.attendanceRole, "幹部");
+
+  for (const invalidUserId of ["inactive-only", "missing-user"]) {
+    view.attendanceRole = "ホスト";
+    view.attendanceUserId = "";
+    window.location.hash = `#page=attendance&eventId=event-1&attendanceUserId=${invalidUserId}`;
+    restoreAndReconcile();
+    assert.equal(
+      view.attendanceUserId,
+      "",
+      `${invalidUserId} must be cleared instead of being replaced with another host`,
+    );
+  }
 });
 
 test("repository text contains no legacy template branding", async () => {

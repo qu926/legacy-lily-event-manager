@@ -929,6 +929,21 @@ table.data-table tbody tr:last-child th[scope="row"] {
   gap: 12px;
 }
 
+.attendance-person-selectors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.attendance-selection-notice {
+  border-left: 3px solid var(--gold);
+  background: var(--gold-soft);
+  color: var(--text);
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
 .bulk-attendance-row {
   display: grid;
   grid-template-columns: minmax(130px, 0.8fr) minmax(320px, 1.6fr) minmax(180px, 1fr);
@@ -1692,6 +1707,7 @@ table.data-table tbody tr:last-child th[scope="row"] {
   }
 
   .form-grid,
+  .attendance-person-selectors,
   .bulk-attendance-row,
   .drink-plan-form,
   .request-setting-form,

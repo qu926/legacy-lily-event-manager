@@ -276,6 +276,7 @@ let view = {
   adminTab: "dashboard",
   eventId: "",
   archiveEventId: "",
+  attendanceRole: "",
   attendanceUserId: "",
   staffAttendanceMemberId: "",
   reservationTab: "requests",
@@ -291,7 +292,9 @@ let view = {
 
 view.eventId = getDefaultEventId();
 view.archiveEventId = getDefaultArchiveEventId();
-view.attendanceUserId = getActiveUsers(state)[0]?.id || "";
+const initialAttendanceUser = getActiveUsers(state)[0] || null;
+view.attendanceUserId = initialAttendanceUser?.id || "";
+view.attendanceRole = getAttendanceUserRole(initialAttendanceUser);
 view.staffAttendanceMemberId = getActiveStaffMembers(state)[0]?.id || "";
 restoreViewFromLocation();
 
@@ -1678,6 +1681,43 @@ function getDefaultArchiveEventId() {
   return archived[0]?.id || "";
 }
 
+function normalizeAttendanceRole(role) {
+  return String(role || "").trim() || "ホスト";
+}
+
+function getAttendanceUserRole(user) {
+  return normalizeAttendanceRole(user?.role);
+}
+
+function getAttendanceRoleGroups(currentState) {
+  const usersByRole = new Map();
+  for (const user of getActiveUsers(currentState)) {
+    const role = getAttendanceUserRole(user);
+    if (!usersByRole.has(role)) usersByRole.set(role, []);
+    usersByRole.get(role).push(user);
+  }
+
+  const configuredRoles = getRoles(currentState, true).map((role) => normalizeAttendanceRole(role.name));
+  const roleOrder = [...new Set([...configuredRoles, ...usersByRole.keys()])];
+  return roleOrder
+    .filter((role) => usersByRole.has(role))
+    .map((role) => ({ role, users: usersByRole.get(role) }));
+}
+
+function reconcileAttendanceSelection() {
+  const roleGroups = getAttendanceRoleGroups(state);
+  const selectedUser = getActiveUsers(state).find((user) => user.id === view.attendanceUserId);
+
+  if (selectedUser) {
+    view.attendanceRole = getAttendanceUserRole(selectedUser);
+    return;
+  }
+
+  view.attendanceUserId = "";
+  const selectedGroup = roleGroups.find((group) => group.role === view.attendanceRole) || roleGroups[0];
+  view.attendanceRole = selectedGroup?.role || "";
+}
+
 function restoreViewFromLocation() {
   const hash = window.location.hash.replace(/^#/, "");
   if (!hash) return;
@@ -1691,7 +1731,14 @@ function restoreViewFromLocation() {
   if (RESERVATION_TABS.has(reservationTab)) view.reservationTab = reservationTab;
   if (params.has("eventId")) view.eventId = params.get("eventId") || view.eventId;
   if (params.has("archiveEventId")) view.archiveEventId = params.get("archiveEventId") || "";
-  if (params.has("attendanceUserId")) view.attendanceUserId = params.get("attendanceUserId") || view.attendanceUserId;
+  if (params.has("attendanceRole")) view.attendanceRole = normalizeAttendanceRole(params.get("attendanceRole"));
+  if (params.has("attendanceUserId")) {
+    view.attendanceUserId = params.get("attendanceUserId") || "";
+    const selectedUser = getActiveUsers(state).find((user) => user.id === view.attendanceUserId);
+    if (selectedUser) view.attendanceRole = getAttendanceUserRole(selectedUser);
+  } else if (params.has("attendanceRole")) {
+    view.attendanceUserId = "";
+  }
   if (params.has("staffAttendanceMemberId")) view.staffAttendanceMemberId = params.get("staffAttendanceMemberId") || view.staffAttendanceMemberId;
   if (params.has("dashboardDetailType")) view.dashboardDetailType = params.get("dashboardDetailType") || "";
   if (params.has("dashboardDetailKey")) view.dashboardDetailKey = params.get("dashboardDetailKey") || "";
@@ -1706,6 +1753,7 @@ function saveViewToLocation() {
     params.set("reservationTab", view.reservationTab);
   }
   if (view.archiveEventId) params.set("archiveEventId", view.archiveEventId);
+  if (view.attendanceRole) params.set("attendanceRole", view.attendanceRole);
   if (view.attendanceUserId) params.set("attendanceUserId", view.attendanceUserId);
   if (view.staffAttendanceMemberId) params.set("staffAttendanceMemberId", view.staffAttendanceMemberId);
   if (view.dashboardDetailType) params.set("dashboardDetailType", view.dashboardDetailType);
@@ -1725,8 +1773,7 @@ function render() {
   const selectedEvent = findEvent(state, view.eventId);
   if (!selectedEvent || isEventArchived(selectedEvent)) view.eventId = getDefaultEventId();
   if (view.archiveEventId && !findEvent(state, view.archiveEventId)) view.archiveEventId = "";
-  const selectedAttendanceUser = findUser(state, view.attendanceUserId);
-  if (!selectedAttendanceUser || selectedAttendanceUser.is_active === false) view.attendanceUserId = getActiveUsers(state)[0]?.id || "";
+  reconcileAttendanceSelection();
   const selectedStaffMember = findStaffMember(state, view.staffAttendanceMemberId);
   if (!selectedStaffMember || selectedStaffMember.is_active === false) view.staffAttendanceMemberId = getActiveStaffMembers(state)[0]?.id || "";
   if (view.editingReservationRequestId && !(state.reservation_requests || []).some((request) => request.id === view.editingReservationRequestId && !request.is_deleted)) {
@@ -1854,6 +1901,10 @@ function renderAttendancePage() {
     .filter((item) => item.status !== "休み")
     .sort((a, b) => a.event_date.localeCompare(b.event_date));
   const activeUsers = getActiveUsers(state);
+  const attendanceRoleGroups = getAttendanceRoleGroups(state);
+  const selectedRoleGroup = attendanceRoleGroups.find((group) => group.role === view.attendanceRole);
+  const roleUsers = selectedRoleGroup?.users || [];
+  const selectedAttendanceUser = roleUsers.find((user) => user.id === view.attendanceUserId) || null;
   return `
     <section class="page-grid two-col">
       <div class="panel">
@@ -1865,19 +1916,35 @@ function renderAttendancePage() {
           <span class="capacity ok">${events.length}日分</span>
         </div>
         <form class="bulk-attendance-form" data-action="save-bulk-attendance">
-          <label>
-            <span>ホスト名</span>
-            <select name="user_id" data-role="attendance-user-select">
-              ${activeUsers.map((user) => option(user.id, user.display_name, user.id === view.attendanceUserId)).join("")}
-            </select>
-          </label>
+          <div class="attendance-person-selectors" role="group" aria-describedby="attendance-selection-help">
+            <label>
+              <span>ロール</span>
+              <select data-role="attendance-role-select" aria-label="勤怠を入力するホストのロール" aria-describedby="attendance-selection-help" ${attendanceRoleGroups.length ? "" : "disabled"}>
+                ${attendanceRoleGroups.length
+                  ? attendanceRoleGroups.map((group) => option(group.role, `${group.role}（${group.users.length}人）`, group.role === view.attendanceRole)).join("")
+                  : option("", "選択できるロールがありません", true)}
+              </select>
+            </label>
+            <label>
+              <span>ホスト名</span>
+              <select name="user_id" data-role="attendance-user-select" aria-label="勤怠を入力するホスト" aria-describedby="attendance-selection-help" ${roleUsers.length ? "" : "disabled"}>
+                ${option("", "選択してください", !selectedAttendanceUser)}
+                ${roleUsers.map((user) => option(user.id, user.display_name, user.id === view.attendanceUserId)).join("")}
+              </select>
+            </label>
+          </div>
+          <p class="plan-note" id="attendance-selection-help">ロールを選び、続けて勤怠を入力するホストを選択してください。</p>
           <p class="plan-note">各日程の出欠をまとめて選択できます。何も選んでいない日は未入力のままです。</p>
-          ${activeUsers.length && events.length ? `
+          ${!activeUsers.length || !events.length
+            ? `<p class="empty">入力対象の日程またはホストがありません。</p>`
+            : !selectedAttendanceUser
+              ? `<p class="attendance-selection-notice" role="status">ホストを選択すると、勤怠入力欄と保存ボタンが表示されます。</p>`
+              : `
             <button class="primary-button bulk-save-button" type="submit">まとめて登録 / 更新する</button>
             <div class="bulk-attendance-list">
               ${events.map((item) => renderBulkAttendanceRow(item)).join("")}
             </div>
-          ` : `<p class="empty">入力対象の日程またはホストがありません。</p>`}
+          `}
         </form>
       </div>
       <aside class="panel">
@@ -4899,11 +4966,17 @@ function saveBulkAttendance(form) {
     showToast("ホスト名を選択してください。", "error");
     return;
   }
+  const user = findUser(state, userId);
+  if (!user || user.is_active !== true || getAttendanceUserRole(user) !== view.attendanceRole) {
+    view.attendanceUserId = "";
+    render();
+    showToast("選択したホストの在籍状態またはロールが変更されています。ホストを選び直してください。", "error");
+    return;
+  }
   if (!selectedCount) {
     showToast("出欠を選択してください。", "error");
     return;
   }
-  const user = findUser(state, userId);
   const ok = window.confirm(`${user?.display_name || "選択中のホスト"} として ${selectedCount}日分の勤怠を保存します。名前は間違いありませんか？`);
   if (!ok) return;
   view.attendanceUserId = userId;
@@ -4987,9 +5060,20 @@ function handleChange(event) {
     render();
     return;
   }
+  const attendanceRole = event.target.closest("[data-role='attendance-role-select']");
+  if (attendanceRole) {
+    const selectedGroup = getAttendanceRoleGroups(state).find((group) => group.role === attendanceRole.value);
+    view.attendanceRole = selectedGroup?.role || "";
+    view.attendanceUserId = "";
+    render();
+    return;
+  }
   const attendanceUser = event.target.closest("[data-role='attendance-user-select']");
   if (attendanceUser) {
     view.attendanceUserId = attendanceUser.value;
+    const selectedUser = getActiveUsers(state).find((user) => user.id === view.attendanceUserId);
+    if (selectedUser) view.attendanceRole = getAttendanceUserRole(selectedUser);
+    else view.attendanceUserId = "";
     render();
     return;
   }

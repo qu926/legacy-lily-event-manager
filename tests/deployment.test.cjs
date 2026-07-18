@@ -441,6 +441,7 @@ test("host attendance role selection filters active hosts and hides saving until
   const view = { eventId: "event-1", attendanceRole: "ホスト", attendanceUserId: "" };
   const sandbox = {
     ...attendanceSandbox(state, view),
+    pendingAttendanceUserId: "remote-only",
     getActiveEvents: () => [{ id: "event-1", event_date: "2026-07-18", status: "開催" }],
     findEvent: () => ({ id: "event-1", event_date: "2026-07-18", status: "開催" }),
     formatDateLabel: () => "7/18（土）",
@@ -552,10 +553,13 @@ test("changing attendance role clears the host until an explicit host change syn
   handleChange(changeEvent("attendance-role-select", "幹部"));
   assert.equal(view.attendanceRole, "幹部");
   assert.equal(view.attendanceUserId, "", "changing role must not impersonate the first host");
+  assert.equal(sandbox.pendingAttendanceUserId, "", "an explicit role choice must cancel a pending URL host");
 
+  sandbox.pendingAttendanceUserId = "remote-only";
   handleChange(changeEvent("attendance-user-select", "leader-2"));
   assert.equal(view.attendanceUserId, "leader-2");
   assert.equal(view.attendanceRole, "幹部");
+  assert.equal(sandbox.pendingAttendanceUserId, "", "an explicit host choice must cancel a pending URL host");
 
   handleChange(changeEvent("attendance-role-select", "ホスト"));
   assert.equal(view.attendanceUserId, "");
@@ -565,12 +569,11 @@ test("changing attendance role clears the host until an explicit host change syn
 
 test("attendance starts without implicitly selecting the first host", async () => {
   const app = await readText("js", "app.js");
+  const startup = app.slice(app.indexOf("view.eventId = getDefaultEventId()"), app.indexOf("restoreViewFromLocation();"));
 
-  assert.doesNotMatch(
-    app,
-    /view\.attendanceUserId\s*=\s*getActiveUsers\(state\)\[0\]/,
-    "the first active host must never be selected during startup",
-  );
+  assert.doesNotMatch(startup, /initialAttendanceUser/);
+  assert.doesNotMatch(startup, /view\.attendanceUserId\s*=/, "startup must leave the host unselected");
+  assert.doesNotMatch(startup, /view\.attendanceRole\s*=/, "startup must leave the role unselected");
   assert.match(app, /attendanceUserId:\s*""/);
   assert.match(app, /ロールを選択してください/);
 });
@@ -638,6 +641,46 @@ test("attendance save revalidates the host against shared state and keeps offlin
   remoteMode = "error";
   const offlineUser = await attendanceSave.getAttendanceUserForSave("host-standard", "ホスト");
   assert.equal(offlineUser?.id, "host-standard", "temporary connection failures must not disable local attendance entry");
+});
+
+test("shared attendance saves guard every CAS attempt against role and active-state changes", async () => {
+  const app = await readText("js", "app.js");
+  const state = attendanceFixtureState();
+  const sandbox = {
+    ...attendanceSandbox(state, {}),
+    clone: (value) => structuredClone(value),
+  };
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "host-attendance-atomic-guard",
+  });
+  const script = new vm.Script(`
+    (() => {
+      ${functionSource(app, "normalizeAttendanceRole")}
+      ${functionSource(app, "getAttendanceUserRole")}
+      ${functionSource(app, "findSelectableAttendanceUser")}
+      ${functionSource(app, "assertAttendanceUserGuard")}
+      return assertAttendanceUserGuard;
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const assertAttendanceUserGuard = script.runInContext(context, { timeout: 1_000 });
+  const inactiveState = {
+    ...state,
+    users: state.users.map((user) => user.id === "host-standard" ? { ...user, is_active: false } : user),
+  };
+
+  assert.doesNotThrow(() => assertAttendanceUserGuard(state, { userId: "host-standard", role: "ホスト" }));
+  assert.throws(
+    () => assertAttendanceUserGuard(inactiveState, { userId: "host-standard", role: "ホスト" }),
+    (error) => Boolean(error.code === "ATTENDANCE_USER_CHANGED" && error.recoveryState?.users),
+  );
+  assert.match(functionSource(app, "saveMergedSharedState"), /if \(options\.attendanceUserGuard\) assertAttendanceUserGuard\(latestState, options\.attendanceUserGuard\)/);
+  assert.match(functionSource(app, "saveBulkAttendance"), /attendanceUserGuard:\s*\{ userId, role: view\.attendanceRole \}/);
+  assert.match(
+    functionSource(app, "saveState"),
+    /error\.code === "ATTENDANCE_USER_CHANGED"[\s\S]*?mode: "supabase"/,
+    "an attendance guard conflict must keep shared sync enabled for the next corrected save",
+  );
 });
 
 test("attendance URL state preserves valid users but never substitutes invalid users", async () => {

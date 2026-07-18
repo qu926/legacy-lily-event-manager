@@ -1414,7 +1414,7 @@ function saveState(nextState, message = "保存しました。", options = {}) {
     ? getRequestedEventDeleteOperations(options)
     : [];
   const deferSharedSuccessToast = syncStatus.mode === "supabase"
-    && (eventDeletes.length > 0 || requestedEventDeletes.length > 0);
+    && (eventDeletes.length > 0 || requestedEventDeletes.length > 0 || options.attendanceUserGuard);
   try {
     assertNoTombstonedPersonReferences(nextState, state);
   } catch (error) {
@@ -1472,7 +1472,9 @@ function saveState(nextState, message = "保存しました。", options = {}) {
           localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
           showToast(error.userMessage || "参照が追加されたため削除を取り消しました。", "error");
         }
-        syncStatus = { mode: "error", text: shortSyncError(error, "共有DBへの保存に失敗") };
+        syncStatus = error.code === "ATTENDANCE_USER_CHANGED"
+          ? { mode: "supabase", text: "共有DBと同期済み" }
+          : { mode: "error", text: shortSyncError(error, "共有DBへの保存に失敗") };
         render();
       });
   }
@@ -1505,6 +1507,7 @@ async function saveMergedSharedState(localState, options = {}) {
     const record = await loadSharedRecord();
     const migratedRemoteState = record.state ? migrateState(record.state) : null;
     const latestState = migratedRemoteState || localState;
+    if (options.attendanceUserGuard) assertAttendanceUserGuard(latestState, options.attendanceUserGuard);
     const sharedAuthoritativeEventDeleteIds = typeof findSharedAuthoritativeEventDeletionIds === "function"
       ? findSharedAuthoritativeEventDeletionIds(localState, latestState, eventDeletes)
       : [];
@@ -4992,6 +4995,15 @@ function findSelectableAttendanceUser(targetState, userId, role) {
   return user;
 }
 
+function assertAttendanceUserGuard(latestState, guard) {
+  if (!guard || findSelectableAttendanceUser(latestState, guard.userId, guard.role)) return;
+  const error = new Error("ATTENDANCE_USER_CHANGED");
+  error.code = "ATTENDANCE_USER_CHANGED";
+  error.userMessage = "選択したホストの在籍状態またはロールが変更されたため、勤怠の保存を中止しました。ホストを選び直してください。";
+  error.recoveryState = clone(latestState);
+  throw error;
+}
+
 async function getAttendanceUserForSave(userId, role) {
   const localUser = findSelectableAttendanceUser(state, userId, role);
   if (!localUser || syncStatus.mode !== "supabase") return localUser;
@@ -5052,7 +5064,9 @@ async function saveBulkAttendance(form) {
     showToast(errors.join(" / "), "error");
     return;
   }
-  saveState(nextState, `${savedCount}日分の勤怠を保存しました。`);
+  saveState(nextState, `${savedCount}日分の勤怠を保存しました。`, {
+    attendanceUserGuard: { userId, role: view.attendanceRole },
+  });
 }
 
 function saveBulkStaffAttendance(form) {
@@ -5117,12 +5131,14 @@ function handleChange(event) {
     const selectedGroup = getAttendanceRoleGroups(state).find((group) => group.role === attendanceRole.value);
     view.attendanceRole = selectedGroup?.role || "";
     view.attendanceUserId = "";
+    pendingAttendanceUserId = "";
     render();
     if (typeof root !== "undefined") root.querySelector("[data-role='attendance-user-select']")?.focus();
     return;
   }
   const attendanceUser = event.target.closest("[data-role='attendance-user-select']");
   if (attendanceUser) {
+    pendingAttendanceUserId = "";
     view.attendanceUserId = attendanceUser.value;
     const selectedUser = getActiveUsers(state).find((user) => user.id === view.attendanceUserId);
     if (selectedUser) view.attendanceRole = getAttendanceUserRole(selectedUser);

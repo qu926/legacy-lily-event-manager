@@ -57,10 +57,16 @@ async function loadWindowConfig() {
 }
 
 function functionSource(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `function ${name} must exist`);
+  const functionStart = source.indexOf(`function ${name}(`);
+  assert.notEqual(functionStart, -1, `function ${name} must exist`);
+  const start = source.slice(Math.max(0, functionStart - 6), functionStart) === "async "
+    ? functionStart - 6
+    : functionStart;
 
-  const next = source.indexOf("\nfunction ", start + 1);
+  const nextPlain = source.indexOf("\nfunction ", functionStart + 1);
+  const nextAsync = source.indexOf("\nasync function ", functionStart + 1);
+  const nextCandidates = [nextPlain, nextAsync].filter((index) => index !== -1);
+  const next = nextCandidates.length ? Math.min(...nextCandidates) : -1;
   return source.slice(start, next === -1 ? source.length : next);
 }
 
@@ -464,7 +470,7 @@ test("host attendance role selection filters active hosts and hides saving until
   const unselectedHtml = renderAttendancePage();
   const roleOptions = dataRoleSelectOptions(unselectedHtml, "attendance-role-select");
   assert.deepEqual(
-    new Set(roleOptions.map((item) => item.value)),
+    new Set(roleOptions.map((item) => item.value).filter(Boolean)),
     new Set(["ホスト", "幹部", "体入"]),
     "roles without active users must not be offered",
   );
@@ -506,9 +512,16 @@ test("changing attendance role clears the host until an explicit host change syn
   const state = attendanceFixtureState();
   const view = { attendanceRole: "ホスト", attendanceUserId: "host-standard" };
   let renderCount = 0;
+  let hostFocusCount = 0;
   const sandbox = {
     ...attendanceSandbox(state, view),
     render: () => { renderCount += 1; },
+    root: {
+      querySelector(selector) {
+        assert.equal(selector, "[data-role='attendance-user-select']");
+        return { focus: () => { hostFocusCount += 1; } };
+      },
+    },
     syncReservationAttributeControls: () => {},
     saveHostPhotoFromInput: () => {},
   };
@@ -547,6 +560,84 @@ test("changing attendance role clears the host until an explicit host change syn
   handleChange(changeEvent("attendance-role-select", "ホスト"));
   assert.equal(view.attendanceUserId, "");
   assert.equal(renderCount, 3);
+  assert.equal(hostFocusCount, 2, "focus must move to the host selector after each role change");
+});
+
+test("attendance starts without implicitly selecting the first host", async () => {
+  const app = await readText("js", "app.js");
+
+  assert.doesNotMatch(
+    app,
+    /view\.attendanceUserId\s*=\s*getActiveUsers\(state\)\[0\]/,
+    "the first active host must never be selected during startup",
+  );
+  assert.match(app, /attendanceUserId:\s*""/);
+  assert.match(app, /ロールを選択してください/);
+});
+
+test("attendance save revalidates the host against shared state and keeps offline fallback", async () => {
+  const app = await readText("js", "app.js");
+  const state = { ...attendanceFixtureState(), attendance_entries: [] };
+  const view = { attendanceRole: "ホスト", attendanceUserId: "host-standard" };
+  let renderCount = 0;
+  let confirmCount = 0;
+  let saveCount = 0;
+  let toast = null;
+  let remoteMode = "inactive";
+  class FakeFormData {
+    get(name) {
+      if (name === "user_id") return "host-standard";
+      if (name === "status_event-1") return "出勤";
+      return "";
+    }
+    getAll(name) {
+      return name === "attendance_event_id" ? ["event-1"] : [];
+    }
+  }
+  const sandbox = {
+    ...attendanceSandbox(state, view),
+    FormData: FakeFormData,
+    syncStatus: { mode: "supabase" },
+    async loadSharedState() {
+      if (remoteMode === "error") throw new Error("offline");
+      return {
+        ...state,
+        users: state.users.map((user) => user.id === "host-standard" ? { ...user, is_active: false } : user),
+      };
+    },
+    render: () => { renderCount += 1; },
+    showToast: (message, type) => { toast = { message, type }; },
+    saveState: () => { saveCount += 1; },
+    upsertAttendance: () => { throw new Error("blocked saves must not reach upsertAttendance"); },
+    window: { confirm: () => { confirmCount += 1; return true; } },
+    console: { warn() {} },
+  };
+  const context = vm.createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+    name: "host-attendance-shared-revalidation",
+  });
+  const script = new vm.Script(`
+    (() => {
+      ${functionSource(app, "normalizeAttendanceRole")}
+      ${functionSource(app, "getAttendanceUserRole")}
+      ${functionSource(app, "findSelectableAttendanceUser")}
+      ${functionSource(app, "getAttendanceUserForSave")}
+      ${functionSource(app, "saveBulkAttendance")}
+      return { getAttendanceUserForSave, saveBulkAttendance };
+    })()
+  `, { filename: fromRoot("js", "app.js") });
+  const attendanceSave = script.runInContext(context, { timeout: 1_000 });
+
+  await attendanceSave.saveBulkAttendance({});
+  assert.equal(view.attendanceUserId, "");
+  assert.equal(renderCount, 1);
+  assert.equal(confirmCount, 0);
+  assert.equal(saveCount, 0);
+  assert.equal(toast?.type, "error");
+
+  remoteMode = "error";
+  const offlineUser = await attendanceSave.getAttendanceUserForSave("host-standard", "ホスト");
+  assert.equal(offlineUser?.id, "host-standard", "temporary connection failures must not disable local attendance entry");
 });
 
 test("attendance URL state preserves valid users but never substitutes invalid users", async () => {
@@ -565,6 +656,7 @@ test("attendance URL state preserves valid users but never substitutes invalid u
     dashboardDetailKey: "",
   };
   let replacedUrl = "";
+  let storageMode = "local";
   const window = {
     location: { hash: "", pathname: "/legacy-lily-event-manager/", search: "" },
     history: {
@@ -580,6 +672,9 @@ test("attendance URL state preserves valid users but never substitutes invalid u
     VIEW_PAGES: new Set(["attendance", "admin", "reservation"]),
     ADMIN_TABS: new Set(["dashboard"]),
     RESERVATION_TABS: new Set(["requests", "towers"]),
+    sharedStateInitialized: true,
+    pendingAttendanceUserId: "",
+    getStorageMode: () => storageMode,
   };
   const hasReconcile = app.includes("function reconcileAttendanceSelection(");
   const reconcileSupport = hasReconcile
@@ -596,10 +691,14 @@ test("attendance URL state preserves valid users but never substitutes invalid u
       ${reconcileSupport}
       ${functionSource(app, "restoreViewFromLocation")}
       ${functionSource(app, "saveViewToLocation")}
+      ${functionSource(app, "resolvePendingAttendanceUserSelection")}
       ${reconcileSource}
       return {
         restoreViewFromLocation,
         saveViewToLocation,
+        resolvePendingAttendanceUserSelection,
+        getPendingAttendanceUserId: () => pendingAttendanceUserId,
+        setSharedStateInitialized: (value) => { sharedStateInitialized = value; },
         reconcileAttendanceSelection: typeof reconcileAttendanceSelection === "function"
           ? reconcileAttendanceSelection
           : null,
@@ -630,6 +729,21 @@ test("attendance URL state preserves valid users but never substitutes invalid u
   restoreAndReconcile();
   assert.equal(view.attendanceUserId, "leader-1", "legacy attendanceUserId-only URLs must retain a valid host");
   assert.equal(view.attendanceRole, "幹部");
+
+  storageMode = "supabase";
+  locationFunctions.setSharedStateInitialized(false);
+  window.location.hash = "#page=attendance&eventId=event-1&attendanceUserId=remote-only";
+  restoreAndReconcile();
+  locationFunctions.saveViewToLocation();
+  assert.equal(locationFunctions.getPendingAttendanceUserId(), "remote-only");
+  assert.match(replacedUrl, /attendanceUserId=remote-only/);
+  state.users.push({ id: "remote-only", display_name: "Remote Host", role: "幹部", is_active: true });
+  locationFunctions.resolvePendingAttendanceUserSelection();
+  assert.equal(view.attendanceUserId, "remote-only");
+  assert.equal(view.attendanceRole, "幹部");
+
+  storageMode = "local";
+  locationFunctions.setSharedStateInitialized(true);
 
   for (const invalidUserId of ["inactive-only", "missing-user"]) {
     view.attendanceRole = "ホスト";

@@ -264,6 +264,8 @@ const RESERVATION_DRINK_TYPES = RESERVATION_DRINK_KEYS.map((key) => ({
 let hasStoredLocalState = false;
 let state = loadState();
 let syncStatus = getInitialSyncStatus();
+let sharedStateInitialized = syncStatus.mode !== "supabase";
+let pendingAttendanceUserId = "";
 const archiveResult = archiveFinishedEvents(state);
 if (archiveResult.changed) {
   state = archiveResult.state;
@@ -292,9 +294,6 @@ let view = {
 
 view.eventId = getDefaultEventId();
 view.archiveEventId = getDefaultArchiveEventId();
-const initialAttendanceUser = getActiveUsers(state)[0] || null;
-view.attendanceUserId = initialAttendanceUser?.id || "";
-view.attendanceRole = getAttendanceUserRole(initialAttendanceUser);
 view.staffAttendanceMemberId = getActiveStaffMembers(state)[0]?.id || "";
 restoreViewFromLocation();
 
@@ -1120,11 +1119,15 @@ async function initializeSharedState() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
       syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
+      sharedStateInitialized = true;
+      if (typeof resolvePendingAttendanceUserSelection === "function") resolvePendingAttendanceUserSelection();
       render();
       return;
     }
     await saveSharedState(state);
     syncStatus = { mode: "supabase", text: "共有DBを初期化済み" };
+    sharedStateInitialized = true;
+    if (typeof resolvePendingAttendanceUserSelection === "function") resolvePendingAttendanceUserSelection();
     render();
   } catch (error) {
     console.error(error);
@@ -1137,6 +1140,8 @@ async function initializeSharedState() {
       }
       localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
       showToast(error.userMessage || "共有DBの最新状態を読み込みました。", "error");
+      sharedStateInitialized = true;
+      if (typeof resolvePendingAttendanceUserSelection === "function") resolvePendingAttendanceUserSelection();
     }
     syncStatus = { mode: "error", text: shortSyncError(error, "共有DBに接続できません") };
     render();
@@ -1714,8 +1719,20 @@ function reconcileAttendanceSelection() {
   }
 
   view.attendanceUserId = "";
-  const selectedGroup = roleGroups.find((group) => group.role === view.attendanceRole) || roleGroups[0];
+  const selectedGroup = roleGroups.find((group) => group.role === view.attendanceRole);
   view.attendanceRole = selectedGroup?.role || "";
+}
+
+function resolvePendingAttendanceUserSelection() {
+  if (!pendingAttendanceUserId) return;
+  const selectedUser = getActiveUsers(state).find((user) => user.id === pendingAttendanceUserId);
+  pendingAttendanceUserId = "";
+  if (!selectedUser) {
+    view.attendanceUserId = "";
+    return;
+  }
+  view.attendanceUserId = selectedUser.id;
+  view.attendanceRole = getAttendanceUserRole(selectedUser);
 }
 
 function restoreViewFromLocation() {
@@ -1731,12 +1748,26 @@ function restoreViewFromLocation() {
   if (RESERVATION_TABS.has(reservationTab)) view.reservationTab = reservationTab;
   if (params.has("eventId")) view.eventId = params.get("eventId") || view.eventId;
   if (params.has("archiveEventId")) view.archiveEventId = params.get("archiveEventId") || "";
-  if (params.has("attendanceRole")) view.attendanceRole = normalizeAttendanceRole(params.get("attendanceRole"));
+  if (params.has("attendanceRole")) {
+    const requestedRole = String(params.get("attendanceRole") || "").trim();
+    view.attendanceRole = requestedRole ? normalizeAttendanceRole(requestedRole) : "";
+  }
   if (params.has("attendanceUserId")) {
-    view.attendanceUserId = params.get("attendanceUserId") || "";
-    const selectedUser = getActiveUsers(state).find((user) => user.id === view.attendanceUserId);
-    if (selectedUser) view.attendanceRole = getAttendanceUserRole(selectedUser);
+    const requestedUserId = params.get("attendanceUserId") || "";
+    const selectedUser = getActiveUsers(state).find((user) => user.id === requestedUserId);
+    if (selectedUser) {
+      pendingAttendanceUserId = "";
+      view.attendanceUserId = selectedUser.id;
+      view.attendanceRole = getAttendanceUserRole(selectedUser);
+    } else if (requestedUserId && !sharedStateInitialized && getStorageMode() === "supabase") {
+      pendingAttendanceUserId = requestedUserId;
+      view.attendanceUserId = "";
+    } else {
+      pendingAttendanceUserId = "";
+      view.attendanceUserId = "";
+    }
   } else if (params.has("attendanceRole")) {
+    pendingAttendanceUserId = "";
     view.attendanceUserId = "";
   }
   if (params.has("staffAttendanceMemberId")) view.staffAttendanceMemberId = params.get("staffAttendanceMemberId") || view.staffAttendanceMemberId;
@@ -1754,7 +1785,8 @@ function saveViewToLocation() {
   }
   if (view.archiveEventId) params.set("archiveEventId", view.archiveEventId);
   if (view.attendanceRole) params.set("attendanceRole", view.attendanceRole);
-  if (view.attendanceUserId) params.set("attendanceUserId", view.attendanceUserId);
+  const attendanceUserId = view.attendanceUserId || (!sharedStateInitialized ? pendingAttendanceUserId : "");
+  if (attendanceUserId) params.set("attendanceUserId", attendanceUserId);
   if (view.staffAttendanceMemberId) params.set("staffAttendanceMemberId", view.staffAttendanceMemberId);
   if (view.dashboardDetailType) params.set("dashboardDetailType", view.dashboardDetailType);
   if (view.dashboardDetailKey) params.set("dashboardDetailKey", view.dashboardDetailKey);
@@ -1921,7 +1953,7 @@ function renderAttendancePage() {
               <span>ロール</span>
               <select data-role="attendance-role-select" aria-label="勤怠を入力するホストのロール" aria-describedby="attendance-selection-help" ${attendanceRoleGroups.length ? "" : "disabled"}>
                 ${attendanceRoleGroups.length
-                  ? attendanceRoleGroups.map((group) => option(group.role, `${group.role}（${group.users.length}人）`, group.role === view.attendanceRole)).join("")
+                  ? `${option("", "ロールを選択してください", !selectedRoleGroup)}${attendanceRoleGroups.map((group) => option(group.role, `${group.role}（${group.users.length}人）`, group.role === view.attendanceRole)).join("")}`
                   : option("", "選択できるロールがありません", true)}
               </select>
             </label>
@@ -4853,7 +4885,7 @@ function deleteArchivedEventFromButton(button) {
   });
 }
 
-function handleSubmit(event) {
+async function handleSubmit(event) {
   const form = event.target.closest("form[data-action]");
   if (!form) return;
   event.preventDefault();
@@ -4865,7 +4897,7 @@ function handleSubmit(event) {
     applyResult(result, "勤怠を保存しました。");
   }
   if (action === "save-bulk-attendance") {
-    saveBulkAttendance(form);
+    await saveBulkAttendance(form);
     return;
   }
   if (action === "save-staff-attendance") {
@@ -4954,7 +4986,27 @@ function handleSubmit(event) {
   }
 }
 
-function saveBulkAttendance(form) {
+function findSelectableAttendanceUser(targetState, userId, role) {
+  const user = findUser(targetState, userId);
+  if (!user || user.is_active !== true || getAttendanceUserRole(user) !== role) return null;
+  return user;
+}
+
+async function getAttendanceUserForSave(userId, role) {
+  const localUser = findSelectableAttendanceUser(state, userId, role);
+  if (!localUser || syncStatus.mode !== "supabase") return localUser;
+
+  try {
+    const latestSharedState = await loadSharedState();
+    if (!latestSharedState) return localUser;
+    return findSelectableAttendanceUser(latestSharedState, userId, role) ? localUser : null;
+  } catch (error) {
+    console.warn("Could not revalidate the attendance host against the shared database.", error);
+    return localUser;
+  }
+}
+
+async function saveBulkAttendance(form) {
   const formData = new FormData(form);
   const userId = String(formData.get("user_id") || "");
   const eventIds = formData.getAll("attendance_event_id").map(String);
@@ -4966,8 +5018,8 @@ function saveBulkAttendance(form) {
     showToast("ホスト名を選択してください。", "error");
     return;
   }
-  const user = findUser(state, userId);
-  if (!user || user.is_active !== true || getAttendanceUserRole(user) !== view.attendanceRole) {
+  const user = await getAttendanceUserForSave(userId, view.attendanceRole);
+  if (!user) {
     view.attendanceUserId = "";
     render();
     showToast("選択したホストの在籍状態またはロールが変更されています。ホストを選び直してください。", "error");
@@ -5066,6 +5118,7 @@ function handleChange(event) {
     view.attendanceRole = selectedGroup?.role || "";
     view.attendanceUserId = "";
     render();
+    if (typeof root !== "undefined") root.querySelector("[data-role='attendance-user-select']")?.focus();
     return;
   }
   const attendanceUser = event.target.closest("[data-role='attendance-user-select']");

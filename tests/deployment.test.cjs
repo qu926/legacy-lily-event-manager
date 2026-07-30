@@ -328,6 +328,21 @@ test("reservation request UI preserves single-instance capacities when the form 
   assert.equal((summaryHtml.match(/<strong>0 \/ 2<\/strong>/g) || []).length, 2);
 });
 
+test("reservation request saves wait for shared confirmation and retry after a sync error", async () => {
+  const app = await fs.readFile(path.join(root, "js", "app.js"), "utf8");
+  assert.match(app, /function isSharedStorageConfigured\(\)\s*\{\s*return getStorageMode\(\) === "supabase";\s*\}/);
+  assert.match(
+    app,
+    /const result = isSharedStorageConfigured\(\)\s*\?\s*await saveReservationRequestToSharedState\(payload, view\.page === "admin"\)/,
+  );
+  assert.match(app, /await saveSharedState\(result\.state, \{ expectedUpdatedAt: record\.updatedAt \}\)/);
+  assert.match(app, /入力内容を残しています。通信を確認して、もう一度押してください。/);
+  assert.doesNotMatch(
+    app,
+    /if \(action === "save-reservation-request"\)[\s\S]{0,700}applyResult\(result, "予約受付に登録しました。"\)/,
+  );
+});
+
 test("reservation champagne UI uses branded names without changing legacy count fields", async () => {
   const app = await readText("js", "app.js");
   const champagneTypes = [

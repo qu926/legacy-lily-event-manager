@@ -1037,6 +1037,10 @@ function getStorageMode() {
     : "local";
 }
 
+function isSharedStorageConfigured() {
+  return getStorageMode() === "supabase";
+}
+
 function getInitialSyncStatus() {
   if (APP_CONFIG.storageMode === "supabase" && getStorageMode() !== "supabase") {
     return { mode: "error", text: "Supabase未設定。URL/keyを入力してください" };
@@ -1319,7 +1323,7 @@ async function loadSharedRecord() {
 }
 
 async function saveSharedState(nextState, options = {}) {
-  if (syncStatus.mode !== "supabase") return;
+  if (syncStatus.mode !== "supabase" && getStorageMode() !== "supabase") return;
   const stateToSave = typeof applyEventTombstones === "function"
     ? applyEventTombstones(nextState)
     : nextState;
@@ -2361,6 +2365,7 @@ function renderReservationRequestForm(eventId, setting, locked, editingRequest =
         </div>
       ` : ""}
       <input type="hidden" name="id" value="${escapeAttr(editing.id || "")}">
+      <input type="hidden" name="base_updated_at" value="${escapeAttr(editing.updated_at || "")}">
       <input type="hidden" name="event_date_id" value="${escapeAttr(eventId)}">
       <div class="request-form-row request-host-row">
         <label><span>担当</span><select name="host_user_id" data-role="reservation-person-select" ${immutableLocked ? "disabled" : ""}><option value="">未選択</option>${personOptions.map((person) => option(person.id, person.label, person.id === editing.host_user_id)).join("")}</select></label>
@@ -4916,12 +4921,30 @@ async function handleSubmit(event) {
       ...data,
       no_same_time_double_booking: false,
     };
-    const result = upsertReservationRequest(state, payload, { admin: view.page === "admin" });
-    if (result.ok) {
+    const submitButton = form.querySelector("button[type='submit']");
+    if (submitButton) submitButton.disabled = true;
+    try {
+      const result = isSharedStorageConfigured()
+        ? await saveReservationRequestToSharedState(payload, view.page === "admin")
+        : upsertReservationRequest(state, payload, { admin: view.page === "admin" });
+      if (!result.ok) {
+        showToast((result.errors || ["予約受付を保存できませんでした。"]).join(" / "), "error");
+        return;
+      }
+      state = result.state;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (isSharedStorageConfigured()) syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
       form.reset();
       view.editingReservationRequestId = "";
+      showToast("予約受付に登録しました。");
+      render();
+    } catch (error) {
+      console.error(error);
+      syncStatus = { mode: "error", text: shortSyncError(error, "共有DBへの保存に失敗") };
+      showToast("予約を共有DBへ保存できませんでした。入力内容を残しています。通信を確認して、もう一度押してください。", "error");
+    } finally {
+      if (submitButton?.isConnected) submitButton.disabled = false;
     }
-    applyResult(result, "予約受付に登録しました。");
     return;
   }
   if (action === "save-reservation-request-setting") {
@@ -5181,7 +5204,7 @@ async function saveReservationFromRow(button) {
       showToast(localHostReferenceError, "error");
       return;
     }
-    if (syncStatus.mode === "supabase") {
+    if (isSharedStorageConfigured()) {
       const result = await saveReservationToSharedState(payload, adminMode);
       if (!result.ok) {
         showToast((result.errors || ["予約を保存できませんでした。"]).join(" / "), "error");
@@ -5251,6 +5274,51 @@ async function saveReservationToSharedState(payload, adminMode) {
     ok: false,
     state: latestState,
     errors: ["他の端末で先に更新されました。最新状態を読み込みました。もう一度確認してください。"],
+  };
+}
+
+async function saveReservationRequestToSharedState(payload, adminMode) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record = await loadSharedRecord();
+    const latestState = record.state ? migrateState(record.state) : state;
+    const existing = payload.id
+      ? (latestState.reservation_requests || []).find((request) => String(request.id) === String(payload.id) && !request.is_deleted)
+      : null;
+    if (payload.id && !existing) {
+      return { ok: false, state: latestState, errors: ["この予約受付は他の端末で削除されています。最新状態を読み込みました。"] };
+    }
+    if (
+      existing
+      && payload.base_updated_at
+      && String(existing.updated_at || "") !== String(payload.base_updated_at)
+    ) {
+      state = latestState;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      return {
+        ok: false,
+        state: latestState,
+        errors: ["この予約受付は他の端末で先に変更されています。画面を更新して、内容を確認してください。"],
+      };
+    }
+    const result = upsertReservationRequest(latestState, payload, { admin: adminMode });
+    if (!result.ok) return result;
+    try {
+      assertNoTombstonedPersonReferences(result.state, latestState);
+      await saveSharedState(result.state, { expectedUpdatedAt: record.updatedAt });
+      return result;
+    } catch (error) {
+      if (error.code === "STALE_SHARED_STATE") continue;
+      throw error;
+    }
+  }
+  const record = await loadSharedRecord();
+  const latestState = record.state ? migrateState(record.state) : state;
+  state = latestState;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  return {
+    ok: false,
+    state: latestState,
+    errors: ["他の端末で同時に更新されました。最新状態を読み込みました。内容を確認して、もう一度押してください。"],
   };
 }
 

@@ -450,6 +450,13 @@ test("reservation champagne UI uses branded names without changing legacy count 
   );
 });
 
+test("instance posters use Legacy Lily branding and a lily watermark", async () => {
+  const app = await readText("js", "app.js");
+  assert.match(app, /ctx\.fillText\("Legacy Lily", 800, 96\)/);
+  assert.match(app, /function drawInstanceLilyWatermark\(/);
+  assert.doesNotMatch(app, /ABYSS\s+出勤ホスト/);
+});
+
 test("host attendance role selection filters active hosts and hides saving until a host is explicit", async () => {
   const app = await readText("js", "app.js");
   const state = attendanceFixtureState();

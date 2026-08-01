@@ -5739,14 +5739,15 @@ function loadCanvasImage(src) {
 }
 
 const INSTANCE_IMAGE_THEME = {
-  bg0: "#050612",
-  bg1: "#101326",
-  bg2: "#1a1436",
-  marble: "rgba(235, 228, 255, 0.075)",
-  lineSoft: "rgba(178, 137, 255, 0.12)",
-  accent: "#caa1ff",
-  accentSoft: "rgba(202, 161, 255, 0.32)",
-  cyanSoft: "rgba(143, 224, 255, 0.12)",
+  bg0: "#05050d",
+  bg1: "#11101d",
+  bg2: "#211831",
+  marble: "rgba(239, 235, 247, 0.055)",
+  lineSoft: "rgba(211, 201, 225, 0.08)",
+  accent: "#d7b5ff",
+  accentSoft: "rgba(202, 161, 255, 0.24)",
+  cyanSoft: "rgba(196, 232, 238, 0.08)",
+  silver: "rgba(229, 225, 235, 0.34)",
   text: "#f8f4ff",
   muted: "#c8bed9",
   card: "#050711",
@@ -5766,13 +5767,23 @@ function drawWorldToneInstanceBackground(ctx, width, height) {
 
   ctx.save();
   ctx.strokeStyle = theme.lineSoft;
-  ctx.lineWidth = 4;
-  for (let x = -width; x < width * 1.7; x += 142) {
+  ctx.lineWidth = 2;
+  for (let x = -width; x < width * 1.7; x += 176) {
     ctx.beginPath();
     ctx.moveTo(x, height + 40);
     ctx.lineTo(x + height + 140, -40);
     ctx.stroke();
   }
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = theme.silver;
+  ctx.lineWidth = 2;
+  roundRectPath(ctx, 26, 26, width - 52, height - 52, 18);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(202, 161, 255, 0.22)";
+  roundRectPath(ctx, 38, 38, width - 76, height - 76, 14);
+  ctx.stroke();
   ctx.restore();
 
   ctx.save();
@@ -5811,14 +5822,46 @@ function drawWorldToneInstanceBackground(ctx, width, height) {
     ctx.fill();
   }
   ctx.restore();
+
+  drawInstanceLilyWatermark(ctx, width * 0.12, height * 0.62, 1, 0.1);
+  drawInstanceLilyWatermark(ctx, width * 0.88, height * 0.62, -1, 0.1);
+}
+
+function drawInstanceLilyWatermark(ctx, centerX, centerY, direction, opacity) {
+  ctx.save();
+  ctx.translate(centerX, centerY);
+  ctx.scale(direction, 1);
+  ctx.globalAlpha = opacity;
+  ctx.strokeStyle = "#e3c7ff";
+  ctx.lineWidth = 7;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(0, 190);
+  ctx.bezierCurveTo(-6, 70, -8, -54, 0, -192);
+  ctx.moveTo(0, -24);
+  ctx.bezierCurveTo(-52, -124, -122, -132, -132, -50);
+  ctx.bezierCurveTo(-138, 6, -68, 14, 0, 58);
+  ctx.moveTo(0, -24);
+  ctx.bezierCurveTo(52, -124, 122, -132, 132, -50);
+  ctx.bezierCurveTo(138, 6, 68, 14, 0, 58);
+  ctx.moveTo(0, -34);
+  ctx.bezierCurveTo(-38, -116, -18, -180, 0, -208);
+  ctx.bezierCurveTo(18, -180, 38, -116, 0, -34);
+  ctx.moveTo(-4, 62);
+  ctx.bezierCurveTo(-54, 18, -112, 32, -116, 100);
+  ctx.moveTo(4, 62);
+  ctx.bezierCurveTo(54, 18, 112, 32, 116, 100);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawWorldToneInstanceImageHeader(ctx, model, instanceTitle) {
   const theme = INSTANCE_IMAGE_THEME;
   ctx.fillStyle = theme.text;
   ctx.textAlign = "center";
-  ctx.font = "800 86px Arial, sans-serif";
-  ctx.fillText("ABYSS   出勤ホスト", 800, 96);
+  ctx.font = "700 82px Georgia, 'Times New Roman', serif";
+  ctx.fillText("Legacy Lily", 800, 96);
   ctx.fillStyle = theme.muted;
   ctx.font = "800 28px Arial, sans-serif";
   const dateLabel = model.event ? model.event.event_date.replaceAll("-", "/") : "対象日未設定";
@@ -5934,7 +5977,7 @@ function drawInstanceImageHeader(ctx, model, instanceTitle) {
   ctx.fillStyle = "#fff8ea";
   ctx.textAlign = "center";
   ctx.font = "800 86px Arial, sans-serif";
-  ctx.fillText("ABYSS   出勤ホスト", 800, 96);
+  ctx.fillText("Legacy Lily", 800, 96);
   ctx.fillStyle = "#c7bda6";
   ctx.font = "800 28px Arial, sans-serif";
   const dateLabel = model.event ? model.event.event_date.replaceAll("-", "/") : "対象日未設定";

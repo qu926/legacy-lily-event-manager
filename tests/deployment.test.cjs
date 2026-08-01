@@ -464,6 +464,8 @@ test("host attendance role selection filters active hosts and hides saving until
   const sandbox = {
     ...attendanceSandbox(state, view),
     pendingAttendanceUserId: "remote-only",
+    sharedStateInitialized: true,
+    isSharedStorageConfigured: () => true,
     getActiveEvents: () => [{ id: "event-1", event_date: "2026-07-18", status: "開催" }],
     findEvent: () => ({ id: "event-1", event_date: "2026-07-18", status: "開催" }),
     formatDateLabel: () => "7/18（土）",
@@ -623,6 +625,7 @@ test("attendance save revalidates the host against shared state and keeps offlin
     ...attendanceSandbox(state, view),
     FormData: FakeFormData,
     syncStatus: { mode: "supabase" },
+    isSharedStorageConfigured: () => true,
     async loadSharedState() {
       if (remoteMode === "error") throw new Error("offline");
       return {
@@ -697,12 +700,29 @@ test("shared attendance saves guard every CAS attempt against role and active-st
     (error) => Boolean(error.code === "ATTENDANCE_USER_CHANGED" && error.recoveryState?.users),
   );
   assert.match(functionSource(app, "saveMergedSharedState"), /if \(options\.attendanceUserGuard\) assertAttendanceUserGuard\(latestState, options\.attendanceUserGuard\)/);
-  assert.match(functionSource(app, "saveBulkAttendance"), /attendanceUserGuard:\s*\{ userId, role: view\.attendanceRole \}/);
+  assert.match(functionSource(app, "saveAttendanceEntriesToSharedState"), /assertAttendanceUserGuard\(nextState, guard\)/);
+  assert.match(functionSource(app, "saveBulkAttendance"), /\{ userId, role: view\.attendanceRole \}/);
   assert.match(
     functionSource(app, "saveState"),
     /error\.code === "ATTENDANCE_USER_CHANGED"[\s\S]*?mode: "supabase"/,
     "an attendance guard conflict must keep shared sync enabled for the next corrected save",
   );
+});
+
+test("attendance saves wait for shared confirmation and retry after sync errors", async () => {
+  const app = await readText("js", "app.js");
+  const submitHandler = functionSource(app, "handleSubmit");
+  const sharedSave = functionSource(app, "saveAttendanceEntriesToSharedState");
+  const commit = functionSource(app, "commitAttendanceEntries");
+
+  assert.match(submitHandler, /await commitAttendanceEntries\(/);
+  assert.doesNotMatch(submitHandler.slice(submitHandler.indexOf('action === "save-attendance"'), submitHandler.indexOf('action === "save-bulk-attendance"')), /applyResult\(/);
+  assert.match(sharedSave, /loadSharedRecord\(\)/);
+  assert.match(sharedSave, /saveSharedStateIfUnchanged\(nextState, record\.updatedAt\)/);
+  assert.match(sharedSave, /error\.code !== "STALE_SHARED_STATE"/);
+  assert.match(commit, /isSharedStorageConfigured\(\)/);
+  assert.doesNotMatch(commit, /syncStatus\.mode === "supabase"/);
+  assert.match(commit, /入力内容は残っています/);
 });
 
 test("attendance URL state preserves valid users but never substitutes invalid users", async () => {

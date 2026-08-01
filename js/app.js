@@ -1147,6 +1147,7 @@ async function initializeSharedState() {
       sharedStateInitialized = true;
       if (typeof resolvePendingAttendanceUserSelection === "function") resolvePendingAttendanceUserSelection();
     }
+    sharedStateInitialized = true;
     syncStatus = { mode: "error", text: shortSyncError(error, "共有DBに接続できません") };
     render();
   }
@@ -1944,6 +1945,15 @@ function renderAttendancePage() {
   const selectedRoleGroup = attendanceRoleGroups.find((group) => group.role === view.attendanceRole);
   const roleUsers = selectedRoleGroup?.users || [];
   const selectedAttendanceUser = roleUsers.find((user) => user.id === view.attendanceUserId) || null;
+  if (isSharedStorageConfigured() && !sharedStateInitialized) {
+    return `
+      <section class="panel attendance-sync-wait" aria-live="polite">
+        <p class="eyebrow">Host</p>
+        <h2>ホスト勤怠入力</h2>
+        <p class="empty">最新の勤怠データを読み込んでいます。入力画面が表示されるまでお待ちください。</p>
+      </section>
+    `;
+  }
   return `
     <section class="page-grid two-col">
       <div class="panel">
@@ -2015,6 +2025,8 @@ function renderBulkAttendanceRow(event) {
   return `
     <div class="bulk-attendance-row">
       <input type="hidden" name="attendance_event_id" value="${event.id}">
+      <input type="hidden" name="base_status_${event.id}" value="${escapeAttr(entry?.status || "")}">
+      <input type="hidden" name="base_memo_${event.id}" value="${escapeAttr(entry?.memo || "")}">
       <div class="bulk-date">
         <h3>${formatDateLabel(event.event_date)}</h3>
         <span>${formatDateTime(event.reservation_open_at)} 解放</span>
@@ -2048,6 +2060,15 @@ function renderStaffAttendancePage() {
     .filter((item) => item.status !== "休み")
     .sort((a, b) => a.event_date.localeCompare(b.event_date));
   const staffMembers = getActiveStaffMembers(state);
+  if (isSharedStorageConfigured() && !sharedStateInitialized) {
+    return `
+      <section class="panel attendance-sync-wait" aria-live="polite">
+        <p class="eyebrow">Staff</p>
+        <h2>内勤勤怠入力</h2>
+        <p class="empty">最新の勤怠データを読み込んでいます。入力画面が表示されるまでお待ちください。</p>
+      </section>
+    `;
+  }
   return `
     <section class="page-grid two-col">
       <div class="panel">
@@ -2103,6 +2124,8 @@ function renderBulkStaffAttendanceRow(event) {
   return `
     <div class="bulk-attendance-row">
       <input type="hidden" name="attendance_event_id" value="${event.id}">
+      <input type="hidden" name="base_status_${event.id}" value="${escapeAttr(entry?.status || "")}">
+      <input type="hidden" name="base_memo_${event.id}" value="${escapeAttr(entry?.memo || "")}">
       <div class="bulk-date">
         <h3>${formatDateLabel(event.event_date)}</h3>
         <span>${formatDateTime(event.reservation_open_at)} 解放</span>
@@ -4901,19 +4924,30 @@ async function handleSubmit(event) {
   const data = Object.fromEntries(new FormData(form).entries());
 
   if (action === "save-attendance") {
-    const result = upsertAttendance(state, data);
-    applyResult(result, "勤怠を保存しました。");
+    const user = findUser(state, data.user_id);
+    const submitButton = form.querySelector("button[type='submit']");
+    if (submitButton) submitButton.disabled = true;
+    await commitAttendanceEntries(
+      [data],
+      { userId: data.user_id, role: getAttendanceUserRole(user) },
+      "勤怠を保存しました。",
+    );
+    if (submitButton?.isConnected) submitButton.disabled = false;
+    return;
   }
   if (action === "save-bulk-attendance") {
     await saveBulkAttendance(form);
     return;
   }
   if (action === "save-staff-attendance") {
-    const result = upsertStaffAttendance(state, data);
-    applyResult(result, "内勤出勤を保存しました。");
+    const submitButton = form.querySelector("button[type='submit']");
+    if (submitButton) submitButton.disabled = true;
+    await commitStaffAttendanceEntries([data], data.staff_member_id, "内勤出勤を保存しました。");
+    if (submitButton?.isConnected) submitButton.disabled = false;
+    return;
   }
   if (action === "save-bulk-staff-attendance") {
-    saveBulkStaffAttendance(form);
+    await saveBulkStaffAttendance(form);
     return;
   }
   if (action === "save-reservation-request") {
@@ -5029,7 +5063,7 @@ function assertAttendanceUserGuard(latestState, guard) {
 
 async function getAttendanceUserForSave(userId, role) {
   const localUser = findSelectableAttendanceUser(state, userId, role);
-  if (!localUser || syncStatus.mode !== "supabase") return localUser;
+  if (!localUser || !isSharedStorageConfigured()) return localUser;
 
   try {
     const latestSharedState = await loadSharedState();
@@ -5041,14 +5075,136 @@ async function getAttendanceUserForSave(userId, role) {
   }
 }
 
+async function saveAttendanceEntriesToSharedState(entries, guard) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const record = await loadSharedRecord();
+    let nextState = record.state ? migrateState(record.state) : clone(state);
+    assertAttendanceUserGuard(nextState, guard);
+    for (const entry of entries) {
+      const result = upsertAttendance(nextState, entry);
+      if (!result.ok) return result;
+      nextState = result.state;
+    }
+    try {
+      await saveSharedStateIfUnchanged(nextState, record.updatedAt);
+      return { ok: true, state: nextState };
+    } catch (error) {
+      if (error.code !== "STALE_SHARED_STATE") throw error;
+    }
+  }
+  const error = new Error("STALE_SHARED_STATE");
+  error.userMessage = "他の方の保存と重なりました。入力内容は残っています。もう一度保存してください。";
+  throw error;
+}
+
+async function commitAttendanceEntries(entries, guard, message) {
+  try {
+    let result;
+    if (isSharedStorageConfigured()) {
+      result = await saveAttendanceEntriesToSharedState(entries, guard);
+    } else {
+      let nextState = state;
+      for (const entry of entries) {
+        result = upsertAttendance(nextState, entry);
+        if (!result.ok) break;
+        nextState = result.state;
+      }
+      if (result?.ok) result = { ok: true, state: nextState };
+    }
+    if (!result?.ok) {
+      showToast((result?.errors || ["勤怠を保存できませんでした。"]).join(" / "), "error");
+      return false;
+    }
+    state = result.state;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (isSharedStorageConfigured()) syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
+    showToast(message);
+    render();
+    return true;
+  } catch (error) {
+    console.error(error);
+    syncStatus = { mode: "error", text: shortSyncError(error, "共有DBへの保存に失敗") };
+    showToast(error.userMessage || "勤怠を共有DBへ保存できませんでした。入力内容は残っています。通信を確認して、もう一度保存してください。", "error");
+    return false;
+  }
+}
+
+function assertStaffAttendanceMember(latestState, staffMemberId) {
+  const member = findStaffMember(latestState, staffMemberId);
+  if (member?.is_active !== false) return;
+  const error = new Error("STAFF_ATTENDANCE_MEMBER_CHANGED");
+  error.userMessage = "選択した内勤の在籍状態が変更されています。内勤を選び直してください。";
+  throw error;
+}
+
+async function saveStaffAttendanceEntriesToSharedState(entries, staffMemberId) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const record = await loadSharedRecord();
+    let nextState = record.state ? migrateState(record.state) : clone(state);
+    assertStaffAttendanceMember(nextState, staffMemberId);
+    for (const entry of entries) {
+      const result = upsertStaffAttendance(nextState, entry);
+      if (!result.ok) return result;
+      nextState = result.state;
+    }
+    try {
+      await saveSharedStateIfUnchanged(nextState, record.updatedAt);
+      return { ok: true, state: nextState };
+    } catch (error) {
+      if (error.code !== "STALE_SHARED_STATE") throw error;
+    }
+  }
+  const error = new Error("STALE_SHARED_STATE");
+  error.userMessage = "他の方の保存と重なりました。入力内容は残っています。もう一度保存してください。";
+  throw error;
+}
+
+async function commitStaffAttendanceEntries(entries, staffMemberId, message) {
+  try {
+    let result;
+    if (isSharedStorageConfigured()) {
+      result = await saveStaffAttendanceEntriesToSharedState(entries, staffMemberId);
+    } else {
+      let nextState = state;
+      for (const entry of entries) {
+        result = upsertStaffAttendance(nextState, entry);
+        if (!result.ok) break;
+        nextState = result.state;
+      }
+      if (result?.ok) result = { ok: true, state: nextState };
+    }
+    if (!result?.ok) {
+      showToast((result?.errors || ["内勤勤怠を保存できませんでした。"]).join(" / "), "error");
+      return false;
+    }
+    state = result.state;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (isSharedStorageConfigured()) syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
+    showToast(message);
+    render();
+    return true;
+  } catch (error) {
+    console.error(error);
+    syncStatus = { mode: "error", text: shortSyncError(error, "共有DBへの保存に失敗") };
+    showToast(error.userMessage || "内勤勤怠を共有DBへ保存できませんでした。入力内容は残っています。もう一度保存してください。", "error");
+    return false;
+  }
+}
+
 async function saveBulkAttendance(form) {
   const formData = new FormData(form);
   const userId = String(formData.get("user_id") || "");
   const eventIds = formData.getAll("attendance_event_id").map(String);
-  const selectedCount = eventIds.filter((eventId) => formData.get(`status_${eventId}`)).length;
-  let nextState = state;
+  const changedEventIds = eventIds.filter((eventId) => {
+    const status = String(formData.get(`status_${eventId}`) || "");
+    const memo = String(formData.get(`memo_${eventId}`) || "");
+    return status !== String(formData.get(`base_status_${eventId}`) || "")
+      || memo !== String(formData.get(`base_memo_${eventId}`) || "");
+  });
+  const selectedCount = changedEventIds.filter((eventId) => formData.get(`status_${eventId}`)).length;
   let savedCount = 0;
   const errors = [];
+  const entries = [];
   if (!userId) {
     showToast("ホスト名を選択してください。", "error");
     return;
@@ -5060,79 +5216,97 @@ async function saveBulkAttendance(form) {
     showToast("選択したホストの在籍状態またはロールが変更されています。ホストを選び直してください。", "error");
     return;
   }
-  if (!selectedCount) {
-    showToast("出欠を選択してください。", "error");
+  if (!changedEventIds.length) {
+    showToast("変更された勤怠がありません。", "error");
+    return;
+  }
+  if (changedEventIds.length !== selectedCount) {
+    showToast("変更する日の出欠を選択してください。", "error");
     return;
   }
   const ok = window.confirm(`${user?.display_name || "選択中のホスト"} として ${selectedCount}日分の勤怠を保存します。名前は間違いありませんか？`);
   if (!ok) return;
   view.attendanceUserId = userId;
-  for (const eventId of eventIds) {
+  for (const eventId of changedEventIds) {
     const status = formData.get(`status_${eventId}`);
     if (!status) continue;
-    const result = upsertAttendance(nextState, {
+    const entry = {
       event_date_id: eventId,
       user_id: userId,
       status,
       memo: formData.get(`memo_${eventId}`) || "",
-    });
+    };
+    const result = upsertAttendance(state, entry);
     if (!result.ok) {
       errors.push(...(result.errors || ["保存できませんでした。"]));
       continue;
     }
-    nextState = result.state;
+    entries.push(entry);
     savedCount += 1;
   }
   if (errors.length) {
     showToast(errors.join(" / "), "error");
     return;
   }
-  saveState(nextState, `${savedCount}日分の勤怠を保存しました。`, {
-    attendanceUserGuard: { userId, role: view.attendanceRole },
-  });
+  await commitAttendanceEntries(
+    entries,
+    { userId, role: view.attendanceRole },
+    `${savedCount}日分の勤怠を保存しました。`,
+  );
 }
 
-function saveBulkStaffAttendance(form) {
+async function saveBulkStaffAttendance(form) {
   const formData = new FormData(form);
   const staffMemberId = String(formData.get("staff_member_id") || "");
   const eventIds = formData.getAll("attendance_event_id").map(String);
-  const selectedCount = eventIds.filter((eventId) => formData.get(`status_${eventId}`)).length;
-  let nextState = state;
+  const changedEventIds = eventIds.filter((eventId) => {
+    const status = String(formData.get(`status_${eventId}`) || "");
+    const memo = String(formData.get(`memo_${eventId}`) || "");
+    return status !== String(formData.get(`base_status_${eventId}`) || "")
+      || memo !== String(formData.get(`base_memo_${eventId}`) || "");
+  });
+  const selectedCount = changedEventIds.filter((eventId) => formData.get(`status_${eventId}`)).length;
   let savedCount = 0;
   const errors = [];
+  const entries = [];
   if (!staffMemberId) {
     showToast("内勤名を選択してください。", "error");
     return;
   }
-  if (!selectedCount) {
-    showToast("出欠を選択してください。", "error");
+  if (!changedEventIds.length) {
+    showToast("変更された内勤勤怠がありません。", "error");
+    return;
+  }
+  if (changedEventIds.length !== selectedCount) {
+    showToast("変更する日の出欠を選択してください。", "error");
     return;
   }
   const staffMember = findStaffMember(state, staffMemberId);
   const ok = window.confirm(`${staffMember?.display_name || "選択中の内勤"} として ${selectedCount}日分の内勤出勤を保存します。名前は間違いありませんか？`);
   if (!ok) return;
   view.staffAttendanceMemberId = staffMemberId;
-  for (const eventId of eventIds) {
+  for (const eventId of changedEventIds) {
     const status = formData.get(`status_${eventId}`);
     if (!status) continue;
-    const result = upsertStaffAttendance(nextState, {
+    const entry = {
       event_date_id: eventId,
       staff_member_id: staffMemberId,
       status,
       memo: formData.get(`memo_${eventId}`) || "",
-    });
+    };
+    const result = upsertStaffAttendance(state, entry);
     if (!result.ok) {
       errors.push(...(result.errors || ["保存できませんでした。"]));
       continue;
     }
-    nextState = result.state;
+    entries.push(entry);
     savedCount += 1;
   }
   if (errors.length) {
     showToast(errors.join(" / "), "error");
     return;
   }
-  saveState(nextState, `${savedCount}日分の内勤出勤を保存しました。`);
+  await commitStaffAttendanceEntries(entries, staffMemberId, `${savedCount}日分の内勤出勤を保存しました。`);
 }
 
 function handleChange(event) {
@@ -5411,7 +5585,7 @@ function reservationPayloadFromRow(row) {
   };
 }
 
-function saveAdminAttendance(button) {
+async function saveAdminAttendance(button) {
   const tr = button.closest("tr");
   const payload = {
     event_date_id: view.eventId,
@@ -5419,11 +5593,17 @@ function saveAdminAttendance(button) {
     status: tr.querySelector("[data-field='status']").value,
     memo: tr.querySelector("[data-field='memo']").value,
   };
-  const result = upsertAttendance(state, payload);
-  applyResult(result, "勤怠を保存しました。");
+  const user = findUser(state, payload.user_id);
+  button.disabled = true;
+  await commitAttendanceEntries(
+    [payload],
+    { userId: payload.user_id, role: getAttendanceUserRole(user) },
+    "勤怠を保存しました。",
+  );
+  if (button.isConnected) button.disabled = false;
 }
 
-function saveAdminStaffAttendance(button) {
+async function saveAdminStaffAttendance(button) {
   const tr = button.closest("tr");
   const payload = {
     event_date_id: view.eventId,
@@ -5431,8 +5611,9 @@ function saveAdminStaffAttendance(button) {
     status: tr.querySelector("[data-field='status']").value,
     memo: tr.querySelector("[data-field='memo']").value,
   };
-  const result = upsertStaffAttendance(state, payload);
-  applyResult(result, "内勤出勤を保存しました。");
+  button.disabled = true;
+  await commitStaffAttendanceEntries([payload], payload.staff_member_id, "内勤出勤を保存しました。");
+  if (button.isConnected) button.disabled = false;
 }
 
 function saveInstanceAssignmentFromButton(button) {

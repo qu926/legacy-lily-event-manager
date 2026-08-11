@@ -303,14 +303,14 @@ test('finished events are automatically archived and reservation sections prefer
   assert.equal(TIME_SLOT_LABELS[TIME_SLOTS[1]], 'ツータイム（後半） 22:40~');
 });
 
-test('attendance upsert is immutable and summary tracks missing, present, absent, undecided, and vacation users', () => {
+test('attendance upsert is immutable and summary tracks missing, present, absent, trial, and vacation users', () => {
   const state = buildDefaultState(new Date(2026, 4, 15, 12));
   const event = activeEvent(state);
   const activeUsers = getActiveUsers(state);
   const absentUser = activeUsers[0];
   const presentUser = activeUsers[1];
   const vacationUser = activeUsers[2];
-  const undecidedUser = activeUsers[3];
+  const trialUser = activeUsers[3];
   const original = deepClone(state);
 
   const vacationResult = upsertVacation(
@@ -357,33 +357,32 @@ test('attendance upsert is immutable and summary tracks missing, present, absent
   );
   assert.equal(absentResult.ok, true);
 
-  const undecidedResult = upsertAttendance(
+  const trialResult = upsertAttendance(
     absentResult.state,
     {
       event_date_id: event.id,
-      user_id: undecidedUser.id,
-      status: 'invalid-status',
+      user_id: trialUser.id,
+      status: "体入",
       memo: '',
     },
     new Date('2026-05-02T10:10:00+09:00'),
   );
-  assert.equal(undecidedResult.ok, true);
-  assert.equal(getAttendanceEntriesForEvent(undecidedResult.state, event.id).length, 3);
+  assert.equal(trialResult.ok, true);
+  assert.equal(getAttendanceEntriesForEvent(trialResult.state, event.id).length, 3);
   assert.equal(
-    getAttendanceEntry(undecidedResult.state, event.id, undecidedUser.id).status,
-    ATTENDANCE_STATUSES[2],
+    getAttendanceEntry(trialResult.state, event.id, trialUser.id).status,
+    "体入",
   );
 
-  const summary = getAttendanceSummary(undecidedResult.state, event.id);
+  const summary = getAttendanceSummary(trialResult.state, event.id);
   assert.equal(summary[ATTENDANCE_STATUSES[0]], 1);
   assert.equal(summary[ATTENDANCE_STATUSES[1]], 1);
   assert.equal(summary[ATTENDANCE_STATUSES[2]], 1);
-  assert.equal(summary[ATTENDANCE_STATUSES[3]], 0);
   assert.equal(summary.長期休暇, 1);
-  assert.equal(getMissingUsers(undecidedResult.state, event.id).length, activeUsers.length - 4);
+  assert.equal(getMissingUsers(trialResult.state, event.id).length, activeUsers.length - 4);
 
   const vacationAttendanceResult = upsertAttendance(
-    undecidedResult.state,
+    trialResult.state,
     {
       event_date_id: event.id,
       user_id: vacationUser.id,
@@ -398,9 +397,9 @@ test('attendance upsert is immutable and summary tracks missing, present, absent
   assert.equal(vacationSummary.長期休暇, 1);
 
   const restResult = upsertAttendance(
-    undecidedResult.state,
+    trialResult.state,
     {
-      event_date_id: restEvent(undecidedResult.state).id,
+      event_date_id: restEvent(trialResult.state).id,
       user_id: presentUser.id,
       status: ATTENDANCE_STATUSES[0],
       memo: '',
@@ -408,7 +407,71 @@ test('attendance upsert is immutable and summary tracks missing, present, absent
     new Date('2026-05-02T11:00:00+09:00'),
   );
   assert.equal(restResult.ok, false);
-  assert.equal(restResult.state, undecidedResult.state);
+  assert.equal(restResult.state, trialResult.state);
+});
+
+test('undecided attendance is retired and legacy entries are treated as missing', () => {
+  assert.deepEqual(ATTENDANCE_STATUSES, ['出勤', '欠席', '体入']);
+  assert.deepEqual(STAFF_ATTENDANCE_STATUSES, ['出勤', '欠席']);
+
+  const state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+  const user = getActiveUsers(state)[0];
+  state.attendance_entries.push({
+    id: 'legacy-undecided',
+    event_date_id: event.id,
+    user_id: user.id,
+    status: '未定',
+    memo: '',
+    is_deleted: false,
+  });
+
+  assert.ok(getMissingUsers(state, event.id).some((item) => item.id === user.id));
+  assert.equal(getAttendanceSummary(state, event.id).未入力, getActiveUsers(state).length);
+  assert.equal(getAttendanceSummary(state, event.id).未定, undefined);
+
+  const invalid = upsertAttendance(state, {
+    event_date_id: event.id,
+    user_id: user.id,
+    status: '未定',
+    memo: '',
+  });
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.errors.join(' / '), /出欠を選択/);
+});
+
+test('legacy undecided staff attendance is treated as missing', () => {
+  const state = buildDefaultState(new Date(2026, 4, 15, 12));
+  const event = activeEvent(state);
+  const createdStaff = upsertStaffMember(state, {
+    display_name: '旧未定テスト',
+    kana: 'きゅうみていてすと',
+    staff_type: '内勤',
+    is_active: true,
+    note: '',
+  });
+  const staffMember = createdStaff.staffMember;
+  createdStaff.state.staff_attendance_entries.push({
+    id: 'legacy-staff-undecided',
+    event_date_id: event.id,
+    staff_member_id: staffMember.id,
+    status: '未定',
+    memo: '引き継ぐメモ',
+    is_deleted: false,
+  });
+
+  assert.ok(getMissingStaffMembers(createdStaff.state, event.id).some((item) => item.id === staffMember.id));
+  assert.equal(getStaffAttendanceSummary(createdStaff.state, event.id).未入力, 1);
+  assert.equal(getStaffAttendanceSummary(createdStaff.state, event.id).未定, undefined);
+
+  const invalid = upsertStaffAttendance(createdStaff.state, {
+    event_date_id: event.id,
+    staff_member_id: staffMember.id,
+    status: '未定',
+    memo: '',
+  });
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.errors.join(' / '), /出欠を選択/);
 });
 
 test('shared state merge keeps attendance entered from another stale browser session', () => {
@@ -546,7 +609,6 @@ test('internal staff attendance is managed separately from host attendance', () 
   assert.deepEqual(getStaffAttendanceSummary(createdStaff.state, event.id), {
     出勤: 0,
     欠席: 0,
-    未定: 0,
     未入力: 1,
   });
   assert.equal(getMissingStaffMembers(createdStaff.state, event.id).length, 1);
@@ -566,7 +628,6 @@ test('internal staff attendance is managed separately from host attendance', () 
   assert.deepEqual(getStaffAttendanceSummary(attended.state, event.id), {
     出勤: 1,
     欠席: 0,
-    未定: 0,
     未入力: 0,
   });
   assert.equal(getMissingStaffMembers(attended.state, event.id).length, 0);
@@ -768,7 +829,7 @@ test('reservation normalization validates slots, trims guest names, clamps count
     ),
     false,
   );
-  assert.equal(normalizeAttendance({ event_date_id: 'ev', user_id: 'u', status: 'bad' }).status, ATTENDANCE_STATUSES[2]);
+  assert.equal(normalizeAttendance({ event_date_id: 'ev', user_id: 'u', status: 'bad' }).status, '');
 });
 
 test('reservation save conflicts protect occupied slots and stale edits', () => {

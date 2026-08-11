@@ -622,11 +622,6 @@ table.data-table tbody tr:last-child th[scope="row"] {
   color: var(--red);
 }
 
-.status-未定 {
-  background: var(--yellow-soft);
-  color: var(--yellow);
-}
-
 .status-体入 {
   background: var(--blue-soft);
   color: var(--blue);
@@ -671,10 +666,6 @@ table.data-table tbody tr:last-child th[scope="row"] {
 
 .summary-card.status-欠席 {
   border-color: rgba(255, 108, 108, 0.55);
-}
-
-.summary-card.status-未定 {
-  border-color: rgba(212, 193, 126, 0.48);
 }
 
 .summary-card.status-体入 {
@@ -737,10 +728,6 @@ table.data-table tbody tr:last-child th[scope="row"] {
 
 .attendance-list-section.status-欠席 {
   border-color: rgba(255, 108, 108, 0.55);
-}
-
-.attendance-list-section.status-未定 {
-  border-color: rgba(212, 193, 126, 0.48);
 }
 
 .attendance-list-section.status-体入 {
@@ -1014,12 +1001,6 @@ table.data-table tbody tr:last-child th[scope="row"] {
   border-color: rgba(255, 108, 108, 0.58);
   background: var(--red-soft);
   color: var(--red);
-}
-
-.bulk-status-option.status-未定 input:checked + span {
-  border-color: rgba(212, 193, 126, 0.5);
-  background: var(--yellow-soft);
-  color: var(--yellow);
 }
 
 .bulk-status-option.status-体入 input:checked + span {
@@ -3125,7 +3106,6 @@ textarea:focus {
   color: var(--red);
 }
 
-.status-未定,
 .status-list li.full em,
 .capacity.full {
   border-color: rgba(var(--yellow-rgb), 0.5);

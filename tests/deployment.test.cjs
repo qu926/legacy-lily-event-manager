@@ -725,6 +725,20 @@ test("attendance saves wait for shared confirmation and retry after sync errors"
   assert.match(commit, /入力内容は残っています/);
 });
 
+test("undecided attendance is removed from host and staff UI and migrated to missing", async () => {
+  const app = await readText("js", "app.js");
+  const core = await readText("js", "core.js");
+
+  assert.match(core, /ATTENDANCE_STATUSES = \["出勤", "欠席", "体入"\]/);
+  assert.match(core, /STAFF_ATTENDANCE_STATUSES = \["出勤", "欠席"\]/);
+  assert.doesNotMatch(app, /HOST_ATTENDANCE_LIST_STATUSES = \[[^\]]*未定/);
+  assert.match(app, /attendance_entries: \(saved\.attendance_entries \|\| \[\]\)\.map/);
+  assert.match(app, /staff_attendance_entries: \(saved\.staff_attendance_entries \|\| \[\]\)\.map/);
+  assert.match(app, /entry\.status === "未定" \? \{ \.\.\.entry, status: "" \} : entry/);
+  assert.match(app, /const migrated = migrateState\(parsed\);/);
+  assert.match(app, /JSON\.stringify\(parsed\) !== JSON\.stringify\(migrated\)/);
+});
+
 test("attendance URL state preserves valid users but never substitutes invalid users", async () => {
   const app = await readText("js", "app.js");
   const state = attendanceFixtureState();

@@ -1,6 +1,6 @@
 export const ROLES = ["幹部", "ホスト", "体入"];
-export const ATTENDANCE_STATUSES = ["出勤", "欠席", "未定", "体入"];
-export const STAFF_ATTENDANCE_STATUSES = ["出勤", "欠席", "未定"];
+export const ATTENDANCE_STATUSES = ["出勤", "欠席", "体入"];
+export const STAFF_ATTENDANCE_STATUSES = ["出勤", "欠席"];
 export const EVENT_STATUSES = ["受付中", "終了", "休み"];
 export const INSTANCE_ASSIGNMENT_KEYS = ["unassigned", "free", "a", "b"];
 export const STAFF_INSTANCE_ASSIGNMENT_KEYS = ["unassigned", "a", "b"];
@@ -689,13 +689,14 @@ export function getMissingUsers(state, eventId) {
   if (!event || event.status === "休み") return [];
   return getActiveUsers(state).filter((user) => {
     if (isOnVacation(state, user.id, event.event_date)) return false;
-    return !getAttendanceEntry(state, eventId, user.id);
+    const entry = getAttendanceEntry(state, eventId, user.id);
+    return !entry || !ATTENDANCE_STATUSES.includes(entry.status);
   });
 }
 
 export function getAttendanceSummary(state, eventId) {
   const event = findEvent(state, eventId);
-  const summary = { 出勤: 0, 欠席: 0, 未定: 0, 体入: 0, 未入力: 0, 長期休暇: 0 };
+  const summary = { 出勤: 0, 欠席: 0, 体入: 0, 未入力: 0, 長期休暇: 0 };
   if (!event || event.status === "休み") return summary;
   for (const user of getActiveUsers(state)) {
     if (isOnVacation(state, user.id, event.event_date)) {
@@ -703,7 +704,7 @@ export function getAttendanceSummary(state, eventId) {
       continue;
     }
     const entry = getAttendanceEntry(state, eventId, user.id);
-    if (!entry) {
+    if (!entry || !ATTENDANCE_STATUSES.includes(entry.status)) {
       summary.未入力 += 1;
       continue;
     }
@@ -792,16 +793,19 @@ export function getStaffAttendanceEntriesForEvent(state, eventId) {
 export function getMissingStaffMembers(state, eventId) {
   const event = findEvent(state, eventId);
   if (!event || event.status === "休み") return [];
-  return getActiveStaffMembers(state).filter((member) => !getStaffAttendanceEntry(state, eventId, member.id));
+  return getActiveStaffMembers(state).filter((member) => {
+    const entry = getStaffAttendanceEntry(state, eventId, member.id);
+    return !entry || !STAFF_ATTENDANCE_STATUSES.includes(entry.status);
+  });
 }
 
 export function getStaffAttendanceSummary(state, eventId) {
   const event = findEvent(state, eventId);
-  const summary = { 出勤: 0, 欠席: 0, 未定: 0, 未入力: 0 };
+  const summary = { 出勤: 0, 欠席: 0, 未入力: 0 };
   if (!event || event.status === "休み") return summary;
   for (const member of getActiveStaffMembers(state)) {
     const entry = getStaffAttendanceEntry(state, eventId, member.id);
-    if (!entry) {
+    if (!entry || !STAFF_ATTENDANCE_STATUSES.includes(entry.status)) {
       summary.未入力 += 1;
       continue;
     }
@@ -814,7 +818,7 @@ export function normalizeAttendance(input) {
   return {
     event_date_id: input.event_date_id,
     user_id: input.user_id,
-    status: ATTENDANCE_STATUSES.includes(input.status) ? input.status : "未定",
+    status: ATTENDANCE_STATUSES.includes(input.status) ? input.status : "",
     memo: input.memo || "",
   };
 }
@@ -823,7 +827,7 @@ export function normalizeStaffAttendance(input) {
   return {
     event_date_id: input.event_date_id,
     staff_member_id: input.staff_member_id,
-    status: STAFF_ATTENDANCE_STATUSES.includes(input.status) ? input.status : "未定",
+    status: STAFF_ATTENDANCE_STATUSES.includes(input.status) ? input.status : "",
     memo: input.memo || "",
   };
 }
@@ -831,6 +835,7 @@ export function normalizeStaffAttendance(input) {
 export function upsertAttendance(state, input, now = new Date()) {
   const draft = clone(state);
   const payload = normalizeAttendance(input);
+  if (!payload.status) return { state, ok: false, errors: ["出欠を選択してください。"] };
   const event = findEvent(draft, payload.event_date_id);
   if (!event || event.status === "休み") {
     return { state, ok: false, errors: ["休み日は勤怠入力対象外です。"] };
@@ -865,6 +870,7 @@ export function upsertStaffAttendance(state, input, now = new Date()) {
   const draft = clone(state);
   draft.staff_attendance_entries ||= [];
   const payload = normalizeStaffAttendance(input);
+  if (!payload.status) return { state, ok: false, errors: ["出欠を選択してください。"] };
   const event = findEvent(draft, payload.event_date_id);
   if (!event || event.status === "休み") {
     return { state, ok: false, errors: ["休み日は内勤出勤入力対象外です。"] };
@@ -1619,7 +1625,6 @@ export function getReservationWarnings(state, reservation) {
       const attendance = getAttendanceEntry(state, reservation.event_date_id, reservation.host_user_id);
       if (!attendance) warnings.push("担当ホストが勤怠未入力です");
       if (attendance?.status === "欠席") warnings.push("担当ホストが欠席です");
-      if (attendance?.status === "未定") warnings.push("担当ホストが未定です");
     }
   }
   if (wasReservationChangedAfterEventCutoff(event, reservation)) warnings.push("17時以降の追加・交代です");

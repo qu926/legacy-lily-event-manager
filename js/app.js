@@ -235,7 +235,7 @@ document.documentElement.dataset.storeTheme = ACTIVE_STORE_THEME.key;
 
 const root = document.querySelector("#app");
 const toastRoot = document.querySelector("#toast");
-const HOST_ATTENDANCE_LIST_STATUSES = ["出勤", "欠席", "未定", "体入", "未入力", "長期休暇"];
+const HOST_ATTENDANCE_LIST_STATUSES = ["出勤", "欠席", "体入", "未入力", "長期休暇"];
 const VIEW_PAGES = new Set(["attendance", "staffAttendance", "attendanceList", "reservation", "admin"]);
 const ADMIN_TABS = new Set([
   "dashboard",
@@ -316,7 +316,11 @@ function loadState() {
     const parsed = JSON.parse(raw);
     if (!parsed?.meta || !Array.isArray(parsed.users)) return buildDefaultState();
     hasStoredLocalState = true;
-    return migrateState(parsed);
+    const migrated = migrateState(parsed);
+    if (JSON.stringify(parsed) !== JSON.stringify(migrated)) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    }
+    return migrated;
   } catch (error) {
     console.warn(error);
     return buildDefaultState();
@@ -330,10 +334,15 @@ function migrateState(saved) {
     ...saved,
     event_dates: migrateEventDates(saved.event_dates || fresh.event_dates),
     reservations: migrateReservations(saved.reservations || [], saved.event_dates || fresh.event_dates),
+    attendance_entries: (saved.attendance_entries || []).map((entry) => (
+      entry.status === "未定" ? { ...entry, status: "" } : entry
+    )),
     drink_plans: migrateDrinkPlans(saved.drink_plans || []),
     roles: saved.roles || fresh.roles,
     staff_members: saved.staff_members || [],
-    staff_attendance_entries: saved.staff_attendance_entries || [],
+    staff_attendance_entries: (saved.staff_attendance_entries || []).map((entry) => (
+      entry.status === "未定" ? { ...entry, status: "" } : entry
+    )),
     reservation_settings: saved.reservation_settings || [],
     reservation_requests: saved.reservation_requests || [],
     instance_assignments: saved.instance_assignments || [],
@@ -2050,7 +2059,6 @@ function renderBulkAttendanceRow(event) {
 function bulkAttendanceLabel(status) {
   if (status === "出勤") return "○ 出勤";
   if (status === "欠席") return "× 欠席";
-  if (status === "未定") return "△ 未定";
   return status;
 }
 

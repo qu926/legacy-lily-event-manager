@@ -92,7 +92,7 @@ import {
   upsertUser,
   upsertVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js?v=champagne-labels-20260717";
+} from "./core.js?v=original-champagne-20260822";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;
@@ -255,7 +255,7 @@ const ADMIN_TABS = new Set([
   "data",
 ]);
 const RESERVATION_TABS = new Set(["requests", "towers"]);
-const RESERVATION_DRINK_KEYS = ["purple", "red", "blue", "green"];
+const RESERVATION_DRINK_KEYS = ["purple", "original", "red", "blue", "green"];
 const RESERVATION_DRINK_TYPES = RESERVATION_DRINK_KEYS.map((key) => ({
   key,
   label: DRINK_LIMITS[key].label,

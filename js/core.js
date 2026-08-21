@@ -32,6 +32,7 @@ export const SLOT_LIMITS = {
 export const DRINK_LIMITS = {
   tower: { label: "タワー", limit: 2 },
   purple: { label: "ナイト 10p", limit: 6 },
+  original: { label: "オリシャン 30pt", limit: 6 },
   red: { label: "ロード 30p", limit: 10 },
   blue: { label: "デューク 50p", limit: 10 },
   green: { label: "クラウン 120p", limit: 20 },
@@ -949,6 +950,7 @@ export function normalizeReservation(input) {
     attribute: RESERVATION_ATTRIBUTE,
     ivan_attribute: IVAN_ATTRIBUTES.includes(input.ivan_attribute) ? input.ivan_attribute : IVAN_ATTRIBUTE,
     purple_count: toCount(input.purple_count),
+    original_count: toCount(input.original_count),
     red_count: toCount(input.red_count),
     blue_count: toCount(input.blue_count),
     green_count: toCount(input.green_count),
@@ -970,6 +972,7 @@ export function isReservationFilled(reservation) {
     reservation.princess_name ||
     reservation.ivan_name ||
     reservation.purple_count ||
+    reservation.original_count ||
     reservation.red_count ||
     reservation.blue_count ||
     reservation.green_count ||
@@ -1252,6 +1255,7 @@ export function normalizeReservationRequest(state, input) {
     ivan_name: (input.ivan_name || "").trim(),
     ivan_attribute: IVAN_ATTRIBUTES.includes(input.ivan_attribute) ? input.ivan_attribute : IVAN_ATTRIBUTE,
     purple_count: toCount(input.purple_count),
+    original_count: toCount(input.original_count),
     red_count: toCount(input.red_count),
     blue_count: toCount(input.blue_count),
     green_count: toCount(input.green_count),
@@ -1267,6 +1271,7 @@ export function isReservationRequestFilled(request) {
     request.princess_name ||
     request.ivan_name ||
     request.purple_count ||
+    request.original_count ||
     request.red_count ||
     request.blue_count ||
     request.green_count ||
@@ -1513,7 +1518,7 @@ export function deleteDrinkPlan(state, planId, now = new Date()) {
 }
 
 export function getDrinkPlanTotals(state, eventId) {
-  const totals = { tower: 0, purple: 0, red: 0, blue: 0, green: 0 };
+  const totals = { tower: 0, purple: 0, original: 0, red: 0, blue: 0, green: 0 };
   for (const plan of getDrinkPlansForEvent(state, eventId)) {
     totals[plan.item_type] = (totals[plan.item_type] || 0) + toCount(plan.count);
   }
@@ -1566,7 +1571,7 @@ export function getSeatCounts(state, eventId) {
 }
 
 export function getDrinkTotals(state, eventId) {
-  const totals = { tower: 0, purple: 0, red: 0, blue: 0, green: 0 };
+  const totals = { tower: 0, purple: 0, original: 0, red: 0, blue: 0, green: 0 };
   for (const reservation of getReservationsForEvent(state, eventId)) {
     addDrinkCounts(totals, reservation);
   }
@@ -1579,6 +1584,7 @@ export function getDrinkTotals(state, eventId) {
 function addDrinkCounts(totals, source) {
   totals.tower += toCount(source.tower_count);
   totals.purple += toCount(source.purple_count);
+  totals.original += toCount(source.original_count);
   totals.red += toCount(source.red_count);
   totals.blue += toCount(source.blue_count);
   totals.green += toCount(source.green_count);

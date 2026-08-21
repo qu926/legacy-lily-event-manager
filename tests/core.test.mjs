@@ -119,6 +119,7 @@ function reservationDraft(eventId, overrides = {}) {
     attribute: RESERVATION_ATTRIBUTE,
     ivan_attribute: IVAN_ATTRIBUTE,
     purple_count: 0,
+    original_count: 0,
     red_count: 0,
     blue_count: 0,
     green_count: 0,
@@ -139,6 +140,7 @@ function reservationRequestDraft(eventId, overrides = {}) {
     ivan_name: '',
     ivan_attribute: IVAN_ATTRIBUTE,
     purple_count: 0,
+    original_count: 0,
     red_count: 0,
     blue_count: 0,
     green_count: 0,
@@ -1364,6 +1366,7 @@ test('drink totals include accepted reservation requests separately from drink p
       host_user_id: hosts[0].id,
       princess_name: 'Accepted drinks',
       purple_count: 1,
+      original_count: 2,
       tower_count: 1,
     }),
     { admin: true, now: '2026-05-03T13:00:00.000Z' },
@@ -1390,6 +1393,7 @@ test('drink totals include accepted reservation requests separately from drink p
   assert.deepEqual(getDrinkTotals(state, event.id), {
     tower: 1,
     purple: 1,
+    original: 2,
     red: 0,
     blue: 0,
     green: 0,
@@ -1411,6 +1415,7 @@ test('drink totals include accepted reservation requests separately from drink p
   assert.deepEqual(getDrinkPlanTotals(planned.state, event.id), {
     tower: 0,
     purple: 0,
+    original: 0,
     red: 3,
     blue: 0,
     green: 0,
@@ -1418,6 +1423,7 @@ test('drink totals include accepted reservation requests separately from drink p
   assert.deepEqual(getDrinkTotals(planned.state, event.id), {
     tower: 1,
     purple: 1,
+    original: 2,
     red: 0,
     blue: 0,
     green: 0,
@@ -1427,12 +1433,13 @@ test('drink totals include accepted reservation requests separately from drink p
 test('champagne display names keep the legacy storage keys and limits', () => {
   const expectedChampagnes = {
     purple: { label: 'ナイト 10p', limit: 6 },
+    original: { label: 'オリシャン 30pt', limit: 6 },
     red: { label: 'ロード 30p', limit: 10 },
     blue: { label: 'デューク 50p', limit: 10 },
     green: { label: 'クラウン 120p', limit: 20 },
   };
 
-  assert.deepEqual(Object.keys(DRINK_LIMITS), ['tower', 'purple', 'red', 'blue', 'green']);
+  assert.deepEqual(Object.keys(DRINK_LIMITS), ['tower', 'purple', 'original', 'red', 'blue', 'green']);
   assert.deepEqual(
     Object.fromEntries(Object.keys(expectedChampagnes).map((key) => [key, DRINK_LIMITS[key]])),
     expectedChampagnes,
@@ -1444,6 +1451,7 @@ test('champagne display names keep the legacy storage keys and limits', () => {
 
   const normalized = normalizeReservation({
     purple_count: 1,
+    original_count: 5,
     red_count: 2,
     blue_count: 3,
     green_count: 4,
@@ -1451,11 +1459,12 @@ test('champagne display names keep the legacy storage keys and limits', () => {
   assert.deepEqual(
     {
       purple_count: normalized.purple_count,
+      original_count: normalized.original_count,
       red_count: normalized.red_count,
       blue_count: normalized.blue_count,
       green_count: normalized.green_count,
     },
-    { purple_count: 1, red_count: 2, blue_count: 3, green_count: 4 },
+    { purple_count: 1, original_count: 5, red_count: 2, blue_count: 3, green_count: 4 },
   );
 });
 
@@ -1496,6 +1505,7 @@ test('drink plans can be entered before reservation open and are tracked separat
   assert.deepEqual(getDrinkPlanTotals(created.state, event.id), {
     tower: 1,
     purple: 0,
+    original: 0,
     red: 0,
     blue: 0,
     green: 0,
@@ -1503,6 +1513,7 @@ test('drink plans can be entered before reservation open and are tracked separat
   assert.deepEqual(getDrinkTotals(created.state, event.id), {
     tower: 0,
     purple: 0,
+    original: 0,
     red: 0,
     blue: 0,
     green: 0,
@@ -1637,6 +1648,7 @@ test('reservation summaries enforce active seat and drink limits', () => {
   assert.deepEqual(getDrinkTotals(third.state, event.id), {
     tower: 1,
     purple: 7,
+    original: 0,
     red: 11,
     blue: 1,
     green: 5,

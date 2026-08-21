@@ -347,6 +347,7 @@ test("reservation champagne UI uses branded names without changing legacy count 
   const app = await readText("js", "app.js");
   const champagneTypes = [
     { key: "purple", label: "ナイト 10p" },
+    { key: "original", label: "オリシャン 30pt" },
     { key: "red", label: "ロード 30p" },
     { key: "blue", label: "デューク 50p" },
     { key: "green", label: "クラウン 120p" },
@@ -407,6 +408,7 @@ test("reservation champagne UI uses branded names without changing legacy count 
   const renderers = script.runInContext(context, { timeout: 1_000 });
   const counts = {
     purple_count: 1,
+    original_count: 5,
     red_count: 2,
     blue_count: 3,
     green_count: 4,
@@ -432,7 +434,7 @@ test("reservation champagne UI uses branded names without changing legacy count 
 
   assert.equal(
     renderers.formatReservationDrinkBreakdown({ tower_count: 1, ...counts }),
-    "タワー ×1 / ナイト 10p ×1 / ロード 30p ×2 / デューク 50p ×3 / クラウン 120p ×4",
+    "タワー ×1 / ナイト 10p ×1 / オリシャン 30pt ×5 / ロード 30p ×2 / デューク 50p ×3 / クラウン 120p ×4",
   );
   assert.equal(
     renderers.summarizeHistoryPayload(

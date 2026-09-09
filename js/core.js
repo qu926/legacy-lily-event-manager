@@ -855,6 +855,11 @@ export function upsertAttendance(state, input, now = new Date()) {
     }),
     status: payload.status,
     memo: payload.memo,
+    reservation_eligible_since: ["出勤", "体入"].includes(payload.status)
+      ? (["出勤", "体入"].includes(existing?.status)
+        ? existing.reservation_eligible_since || existing.updated_at || existing.created_at || stamp
+        : stamp)
+      : null,
     updated_at: stamp,
   };
   if (existing) {
@@ -1166,7 +1171,7 @@ export function getReservationRequestAcceptanceStatus(state, eventId) {
   const holdCapacityByTimeSlot = Object.fromEntries(TIME_SLOTS.map((slot) => [slot, RESERVATION_REQUEST_HOLD_LIMIT_PER_TIME_SLOT]));
   const holdUsedByTimeSlot = Object.fromEntries(TIME_SLOTS.map((slot) => {
     const bucket = buckets[slot];
-    return [slot, bucket.normal.hold.length + bucket.ivan.hold.length];
+    return [slot, bucket.hold.filter((request) => !getRequestAttendanceHoldReason(state, request)).length];
   }));
   const holdUsed = TIME_SLOTS.reduce((sum, slot) => {
     return sum + holdUsedByTimeSlot[slot];
@@ -1240,6 +1245,20 @@ function compareReservationRequests(a, b) {
   return String(a.id || "").localeCompare(String(b.id || ""));
 }
 
+export function getRequestAttendanceHoldReason(state, request) {
+  if (!request.attendance_priority_required || request.placement_status === "reserved") return "";
+  const entry = getAttendanceEntry(state, request.event_date_id, request.host_user_id);
+  if (["出勤", "体入"].includes(entry?.status)) return "";
+  return entry?.status === "欠席" ? "欠席のため保留です" : "勤怠未入力のため保留です";
+}
+
+function requestPriorityTime(state, request) {
+  if (!request.attendance_priority_required) return request.created_at || "";
+  const entry = getAttendanceEntry(state, request.event_date_id, request.host_user_id);
+  const since = entry?.reservation_eligible_since || entry?.updated_at || entry?.created_at || "";
+  return since > request.created_at ? since : request.created_at || "";
+}
+
 export function normalizeReservationRequest(state, input) {
   const eventId = input.event_date_id;
   const allowedTimeSlots = getAllowedRequestTimeSlots(state, eventId);
@@ -1310,7 +1329,7 @@ export function upsertReservationRequest(state, input, options = {}) {
     const buckets = getReservationRequestBuckets(draft, payload.event_date_id);
     const targetBucket = buckets[payload.desired_time_slot] || buckets[TIME_SLOTS[0]];
     const targetSeatBucket = isReservationRequestIvan(payload) ? targetBucket.ivan : targetBucket.normal;
-    const slotHoldUsed = targetBucket.normal.hold.length + targetBucket.ivan.hold.length;
+    const slotHoldUsed = targetBucket.hold.filter((request) => !getRequestAttendanceHoldReason(draft, request)).length;
     const wouldUseHold = targetSeatBucket.reserved.length >= targetSeatBucket.capacity;
     if (wouldUseHold && slotHoldUsed >= RESERVATION_REQUEST_HOLD_LIMIT_PER_TIME_SLOT) {
       const label = REQUEST_TIME_SLOT_LABELS[payload.desired_time_slot] || payload.desired_time_slot;
@@ -1341,6 +1360,7 @@ export function upsertReservationRequest(state, input, options = {}) {
       event_date_id: payload.event_date_id,
       created_at: stamp,
       placement_status: "auto",
+      attendance_priority_required: !options.admin,
       deleted_at: null,
       is_deleted: false,
     }),
@@ -1391,7 +1411,9 @@ export function getReservationRequestBuckets(state, eventId) {
     [TIME_SLOTS[1]]: createReservationRequestBucket(state, eventId, TIME_SLOTS[1]),
     flexible: [],
   };
-  for (const request of getReservationRequestsForEvent(state, eventId)) {
+  const requests = getReservationRequestsForEvent(state, eventId).sort((a, b) =>
+    String(requestPriorityTime(state, a)).localeCompare(String(requestPriorityTime(state, b))) || compareReservationRequests(a, b));
+  for (const request of requests) {
     const bucket = result[request.desired_time_slot] || result[TIME_SLOTS[0]];
     const seatBucket = isReservationRequestIvan(request) ? bucket.ivan : bucket.normal;
     if (request.placement_status === "reserved") {
@@ -1399,7 +1421,7 @@ export function getReservationRequestBuckets(state, eventId) {
       seatBucket.reserved.push(request);
       continue;
     }
-    if (request.placement_status === "hold") {
+    if (request.placement_status === "hold" || getRequestAttendanceHoldReason(state, request)) {
       bucket.hold.push(request);
       seatBucket.hold.push(request);
       continue;

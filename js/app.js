@@ -50,6 +50,7 @@ import {
   getReservationOpenAt,
   getReservationRequestOpenAt,
   getReservationRequestBuckets,
+  getRequestAttendanceHoldReason,
   getReservationRequestAcceptanceStatus,
   getReservationRequestsForEvent,
   getReservationSetting,
@@ -92,7 +93,7 @@ import {
   upsertUser,
   upsertVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js?v=original-champagne-20260822";
+} from "./core.js?v=attendance-priority-20260910";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;
@@ -2326,7 +2327,7 @@ function renderReservationRequestPrototype(eventId, { adminMode = false, locked 
         <h3>予約受付方式（仮）</h3>
         <span class="capacity ${acceptance.closed ? "full" : "ok"}">${setting.instance_count}インスタンス / 合計 ${acceptance.total} / ${acceptance.capacity}</span>
       </div>
-      <p class="plan-note">担当者は席を選ばず、受付順に予約を登録します。運営があとから予約枠・保留枠・インスタンスへ振り分けるための仮画面です。担当はホストのみ選択できます。</p>
+      <p class="plan-note">勤怠未入力・欠席の予約は保留となり、枠を確保しません。出勤・体入を入力した時刻から順番待ちに入ります。</p>
       ${acceptance.closed ? `<div class="notice muted">受付上限 ${acceptance.capacity}件（予約枠${acceptance.reservationCapacity} + 保留枠${acceptance.holdCapacity}）に達しています。新規受付は締切です。</div>` : ""}
       ${adminMode ? renderReservationRequestSettingForm(eventId, setting) : ""}
       ${renderDrinkPlans(eventId, { locked: drinkPlanLocked })}
@@ -2500,7 +2501,7 @@ function renderRequestCardV2(request, adminMode) {
     <article class="request-card ${request.placement_status || "auto"}">
       <div><strong>${escapeHtml(hostName)}</strong><span>${escapeHtml(REQUEST_TIME_SLOT_LABELS[request.desired_time_slot] || request.desired_time_slot)} / ${escapeHtml(seatType)} / ${formatHistoryDateTime(request.created_at)}</span></div>
       <p>${escapeHtml(formatReservationGuestMeta(request) || "姫名未入力")}</p>
-      <p>${escapeHtml([drinks, request.memo].filter(Boolean).join(" / "))}</p>
+      <p>${escapeHtml([getRequestAttendanceHoldReason(state, request), drinks, request.memo].filter(Boolean).join(" / "))}</p>
       ${adminMode ? renderRequestPlacementActionsV2(request) : renderHostRequestActions(request)}
     </article>
   `;
@@ -2588,7 +2589,7 @@ function renderRequestCard(request, adminMode) {
     <article class="request-card ${request.placement_status || "auto"}">
       <div><strong>${escapeHtml(hostName)}</strong><span>${escapeHtml(REQUEST_TIME_SLOT_LABELS[request.desired_time_slot] || request.desired_time_slot)} / ${formatHistoryDateTime(request.created_at)}</span></div>
       <p>${escapeHtml(formatReservationGuestMeta(request) || "姫名未入力")}</p>
-      <p>${escapeHtml([drinks, request.no_same_time_double_booking ? "同タイム2枠不可" : "", flexibleHint, request.memo].filter(Boolean).join(" / "))}</p>
+      <p>${escapeHtml([getRequestAttendanceHoldReason(state, request), drinks, request.no_same_time_double_booking ? "同タイム2枠不可" : "", flexibleHint, request.memo].filter(Boolean).join(" / "))}</p>
       ${adminMode ? renderRequestPlacementActions(request) : renderHostRequestActions(request)}
     </article>
   `;
@@ -4978,7 +4979,7 @@ async function handleSubmit(event) {
       if (isSharedStorageConfigured()) syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
       form.reset();
       view.editingReservationRequestId = "";
-      showToast("予約受付に登録しました。");
+      showToast(getRequestAttendanceHoldReason(state, result.request) || "予約受付に登録しました。");
       render();
     } catch (error) {
       console.error(error);

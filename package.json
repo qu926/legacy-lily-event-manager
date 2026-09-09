@@ -13,7 +13,7 @@
     "check": "node --check js/config.js && node --check js/core.js && node --check js/app.js && node --check server.cjs && node --check tests/server.test.cjs && node --check tests/deployment.test.cjs",
     "test": "npm run check && npm run test:deployment && npm run test:core && npm run test:server",
     "test:deployment": "node --test tests/deployment.test.cjs",
-    "test:core": "node tests/core.test.mjs",
+    "test:core": "node tests/core.test.mjs && node --test tests/attendance-priority.test.mjs",
     "test:server": "node --test tests/server.test.cjs"
   }
 }

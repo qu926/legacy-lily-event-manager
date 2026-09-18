@@ -93,7 +93,7 @@ import {
   upsertUser,
   upsertVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js?v=attendance-priority-20260910";
+} from "./core.js?v=bar-20260918";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;
@@ -256,7 +256,7 @@ const ADMIN_TABS = new Set([
   "data",
 ]);
 const RESERVATION_TABS = new Set(["requests", "towers"]);
-const RESERVATION_DRINK_KEYS = ["purple", "original", "red", "blue", "green"];
+const RESERVATION_DRINK_KEYS = ["purple", "original", "red", "blue", "bar", "green"];
 const RESERVATION_DRINK_TYPES = RESERVATION_DRINK_KEYS.map((key) => ({
   key,
   label: DRINK_LIMITS[key].label,
@@ -2883,6 +2883,7 @@ function renderReservationRow(reservation, context) {
     purple_count: 0,
     red_count: 0,
     blue_count: 0,
+    bar_count: 0,
     green_count: 0,
     tower_count: 0,
     memo: "",
@@ -6443,6 +6444,7 @@ function summarizePayload(payload) {
     "purple_count",
     "red_count",
     "blue_count",
+    "bar_count",
     "green_count",
     "tower_count",
     "is_deleted",

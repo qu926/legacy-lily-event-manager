@@ -350,6 +350,7 @@ test("reservation champagne UI uses branded names without changing legacy count 
     { key: "original", label: "オリシャン 30pt" },
     { key: "red", label: "ロード 30p" },
     { key: "blue", label: "デューク 50p" },
+    { key: "bar", label: "Bar 50p" },
     { key: "green", label: "クラウン 120p" },
   ];
   const sandbox = {
@@ -409,6 +410,7 @@ test("reservation champagne UI uses branded names without changing legacy count 
   const counts = {
     purple_count: 1,
     original_count: 5,
+    bar_count: 0,
     red_count: 2,
     blue_count: 3,
     green_count: 4,

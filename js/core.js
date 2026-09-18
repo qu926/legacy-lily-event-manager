@@ -30,7 +30,7 @@ export const SLOT_LIMITS = {
 };
 
 export const DRINK_LIMITS = {
-  tower: { label: "タワー", limit: 2 },
+  tower: { label: "タワー 200p", limit: 2 },
   purple: { label: "ナイト 10p", limit: 6 },
   original: { label: "オリシャン 30pt", limit: 6 },
   red: { label: "ロード 30p", limit: 10 },

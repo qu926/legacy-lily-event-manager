@@ -360,9 +360,9 @@ test("reservation champagne UI uses branded names without changing legacy count 
     IVAN_ATTRIBUTE: "初回",
     IVAN_ATTRIBUTES: ["リピ", "初回"],
     RESERVATION_DRINK_TYPES: champagneTypes,
-    DRINK_PLAN_TYPES: [{ key: "tower", label: "タワー" }, ...champagneTypes],
+    DRINK_PLAN_TYPES: [{ key: "tower", label: "タワー 200p" }, ...champagneTypes],
     DRINK_LIMITS: Object.fromEntries([
-      { key: "tower", label: "タワー" },
+      { key: "tower", label: "タワー 200p" },
       ...champagneTypes,
     ].map(({ key, label }) => [key, { label }])),
     state: {},
@@ -436,7 +436,7 @@ test("reservation champagne UI uses branded names without changing legacy count 
 
   assert.equal(
     renderers.formatReservationDrinkBreakdown({ tower_count: 1, ...counts }),
-    "タワー ×1 / ナイト 10p ×1 / オリシャン 30pt ×5 / ロード 30p ×2 / デューク 50p ×3 / クラウン 120p ×4",
+    "タワー 200p ×1 / ナイト 10p ×1 / オリシャン 30pt ×5 / ロード 30p ×2 / デューク 50p ×3 / クラウン 120p ×4",
   );
   assert.equal(
     renderers.summarizeHistoryPayload(

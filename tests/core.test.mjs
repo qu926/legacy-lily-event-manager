@@ -1452,6 +1452,7 @@ test('Bar counts survive saving and reload with an independent four-bottle limit
 });
 
 test('champagne display names keep the legacy storage keys and limits', () => {
+  assert.deepEqual(DRINK_LIMITS.tower, { label: 'タワー 200p', limit: 2 });
   const expectedChampagnes = {
     purple: { label: 'ナイト 10p', limit: 6 },
     original: { label: 'オリシャン 30pt', limit: 6 },

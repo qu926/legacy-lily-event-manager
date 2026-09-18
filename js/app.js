@@ -93,7 +93,7 @@ import {
   upsertUser,
   upsertVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js?v=bar-20260918";
+} from "./core.js?v=tower-200p-20260918";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;
@@ -2411,7 +2411,7 @@ function renderReservationRequestForm(eventId, setting, locked, editingRequest =
       </div>
       <div class="request-form-row request-drink-row">
         ${RESERVATION_DRINK_TYPES.map((item) => `<label><span>${escapeHtml(item.label)}</span><input name="${item.key}_count" type="number" min="0" step="1" value="${Number(editing[`${item.key}_count`]) || 0}" ${locked ? "disabled" : ""}></label>`).join("")}
-        <label><span>タワー</span><select name="tower_count" ${locked ? "disabled" : ""}>${option("0", "なし", !Number(editing.tower_count))}${option("1", "あり", Boolean(Number(editing.tower_count)))}</select></label>
+        <label><span>${escapeHtml(DRINK_LIMITS.tower.label)}</span><select name="tower_count" ${locked ? "disabled" : ""}>${option("0", "なし", !Number(editing.tower_count))}${option("1", "あり", Boolean(Number(editing.tower_count)))}</select></label>
       </div>
       <div class="request-form-row request-submit-row">
         <label><span>メモ</span><input name="memo" value="${escapeAttr(editing.memo || "")}" placeholder="確認事項、交渉メモなど" ${locked ? "disabled" : ""}></label>
@@ -2863,7 +2863,7 @@ function renderReservationSection(eventId, timeSlot, seatType, adminMode, locked
       <div class="reservation-grid ${noIvanColumn ? "no-ivan-column" : ""}" role="table">
         <div class="grid-head" role="row">
           <span>組数</span><span>担当</span><span>姫名</span><span>属性</span>${noIvanColumn ? "" : "<span>アイバン名</span><span>属性</span>"}
-          ${RESERVATION_DRINK_TYPES.map((item) => `<span>${escapeHtml(item.label)}</span>`).join("")}<span>タワー</span><span>メモ</span><span>操作</span>
+          ${RESERVATION_DRINK_TYPES.map((item) => `<span>${escapeHtml(item.label)}</span>`).join("")}<span>${escapeHtml(DRINK_LIMITS.tower.label)}</span><span>メモ</span><span>操作</span>
         </div>
         ${rows}
       </div>
@@ -2905,7 +2905,7 @@ function renderReservationRow(reservation, context) {
       ${context.noIvanColumn ? "" : textCell("ivan_name", "アイバン名", data.ivan_name, disabled)}
       ${context.noIvanColumn ? "" : attributeCell("ivan_attribute", "アイバン属性", data.ivan_attribute, disabled)}
       ${RESERVATION_DRINK_TYPES.map((item) => numberCell(`${item.key}_count`, item.label, data[`${item.key}_count`], disabled)).join("")}
-      <label class="grid-cell" data-label="タワー">
+      <label class="grid-cell" data-label="${escapeHtml(DRINK_LIMITS.tower.label)}">
         <select data-field="tower_count" ${disabled}>
           ${option("0", "なし", Number(data.tower_count) === 0)}
           ${option("1", "あり", Number(data.tower_count) > 0)}

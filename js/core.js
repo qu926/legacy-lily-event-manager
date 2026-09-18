@@ -35,6 +35,7 @@ export const DRINK_LIMITS = {
   original: { label: "オリシャン 30pt", limit: 6 },
   red: { label: "ロード 30p", limit: 10 },
   blue: { label: "デューク 50p", limit: 10 },
+  bar: { label: "Bar 50p", limit: 4 },
   green: { label: "クラウン 120p", limit: 20 },
 };
 export const DRINK_PLAN_TYPES = Object.entries(DRINK_LIMITS).map(([key, value]) => ({ key, label: value.label }));
@@ -958,6 +959,7 @@ export function normalizeReservation(input) {
     original_count: toCount(input.original_count),
     red_count: toCount(input.red_count),
     blue_count: toCount(input.blue_count),
+    bar_count: toCount(input.bar_count),
     green_count: toCount(input.green_count),
     tower_count: toCount(input.tower_count) > 0 ? 1 : 0,
     memo: input.memo || "",
@@ -980,6 +982,7 @@ export function isReservationFilled(reservation) {
     reservation.original_count ||
     reservation.red_count ||
     reservation.blue_count ||
+    reservation.bar_count ||
     reservation.green_count ||
     reservation.tower_count ||
     reservation.memo
@@ -1277,6 +1280,7 @@ export function normalizeReservationRequest(state, input) {
     original_count: toCount(input.original_count),
     red_count: toCount(input.red_count),
     blue_count: toCount(input.blue_count),
+    bar_count: toCount(input.bar_count),
     green_count: toCount(input.green_count),
     tower_count: toCount(input.tower_count) > 0 ? 1 : 0,
     memo: input.memo || "",
@@ -1293,6 +1297,7 @@ export function isReservationRequestFilled(request) {
     request.original_count ||
     request.red_count ||
     request.blue_count ||
+    request.bar_count ||
     request.green_count ||
     request.tower_count ||
     request.memo
@@ -1540,7 +1545,7 @@ export function deleteDrinkPlan(state, planId, now = new Date()) {
 }
 
 export function getDrinkPlanTotals(state, eventId) {
-  const totals = { tower: 0, purple: 0, original: 0, red: 0, blue: 0, green: 0 };
+  const totals = { tower: 0, purple: 0, original: 0, red: 0, blue: 0, bar: 0, green: 0 };
   for (const plan of getDrinkPlansForEvent(state, eventId)) {
     totals[plan.item_type] = (totals[plan.item_type] || 0) + toCount(plan.count);
   }
@@ -1593,7 +1598,7 @@ export function getSeatCounts(state, eventId) {
 }
 
 export function getDrinkTotals(state, eventId) {
-  const totals = { tower: 0, purple: 0, original: 0, red: 0, blue: 0, green: 0 };
+  const totals = { tower: 0, purple: 0, original: 0, red: 0, blue: 0, bar: 0, green: 0 };
   for (const reservation of getReservationsForEvent(state, eventId)) {
     addDrinkCounts(totals, reservation);
   }
@@ -1609,6 +1614,7 @@ function addDrinkCounts(totals, source) {
   totals.original += toCount(source.original_count);
   totals.red += toCount(source.red_count);
   totals.blue += toCount(source.blue_count);
+  totals.bar += toCount(source.bar_count);
   totals.green += toCount(source.green_count);
 }
 

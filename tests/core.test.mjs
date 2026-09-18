@@ -122,6 +122,7 @@ function reservationDraft(eventId, overrides = {}) {
     original_count: 0,
     red_count: 0,
     blue_count: 0,
+    bar_count: 0,
     green_count: 0,
     tower_count: 0,
     memo: '',
@@ -143,6 +144,7 @@ function reservationRequestDraft(eventId, overrides = {}) {
     original_count: 0,
     red_count: 0,
     blue_count: 0,
+    bar_count: 0,
     green_count: 0,
     tower_count: 0,
     memo: '',
@@ -1396,6 +1398,7 @@ test('drink totals include accepted reservation requests separately from drink p
     original: 2,
     red: 0,
     blue: 0,
+    bar: 0,
     green: 0,
   });
 
@@ -1418,6 +1421,7 @@ test('drink totals include accepted reservation requests separately from drink p
     original: 0,
     red: 3,
     blue: 0,
+    bar: 0,
     green: 0,
   });
   assert.deepEqual(getDrinkTotals(planned.state, event.id), {
@@ -1426,8 +1430,25 @@ test('drink totals include accepted reservation requests separately from drink p
     original: 2,
     red: 0,
     blue: 0,
+    bar: 0,
     green: 0,
   });
+});
+
+test('Bar counts survive saving and reload with an independent four-bottle limit', () => {
+  let state = buildDefaultState(new Date('2026-09-18T00:00:00Z'));
+  const event = activeEvent(state);
+  const result = upsertReservationRequest(state, { event_date_id: event.id, host_user_id: state.users[1].id, desired_time_slot: '前半', princess_name: 'Bar guest', bar_count: 4 }, { admin: true });
+  assert.equal(result.ok, true);
+  state = JSON.parse(JSON.stringify(result.state));
+  assert.equal(getDrinkTotals(state, event.id).bar, 4);
+  assert.equal(getDrinkTotals(state, event.id).blue, 0);
+  assert.equal(getDrinkLimitStatuses(state, event.id).bar.level, 'full');
+  assert.equal(normalizeReservation({ bar_count: 2 }).bar_count, 2);
+  assert.equal(normalizeReservation({}).bar_count, 0);
+  const plan = upsertDrinkPlan(state, { event_date_id: event.id, host_user_id: state.users[1].id, time_slot: '前半', item_type: 'bar', count: 3 });
+  assert.equal(plan.ok, true);
+  assert.equal(getDrinkPlanTotals(plan.state, event.id).bar, 3);
 });
 
 test('champagne display names keep the legacy storage keys and limits', () => {
@@ -1436,10 +1457,11 @@ test('champagne display names keep the legacy storage keys and limits', () => {
     original: { label: 'オリシャン 30pt', limit: 6 },
     red: { label: 'ロード 30p', limit: 10 },
     blue: { label: 'デューク 50p', limit: 10 },
+    bar: { label: 'Bar 50p', limit: 4 },
     green: { label: 'クラウン 120p', limit: 20 },
   };
 
-  assert.deepEqual(Object.keys(DRINK_LIMITS), ['tower', 'purple', 'original', 'red', 'blue', 'green']);
+  assert.deepEqual(Object.keys(DRINK_LIMITS), ['tower', 'purple', 'original', 'red', 'blue', 'bar', 'green']);
   assert.deepEqual(
     Object.fromEntries(Object.keys(expectedChampagnes).map((key) => [key, DRINK_LIMITS[key]])),
     expectedChampagnes,
@@ -1508,6 +1530,7 @@ test('drink plans can be entered before reservation open and are tracked separat
     original: 0,
     red: 0,
     blue: 0,
+    bar: 0,
     green: 0,
   });
   assert.deepEqual(getDrinkTotals(created.state, event.id), {
@@ -1516,6 +1539,7 @@ test('drink plans can be entered before reservation open and are tracked separat
     original: 0,
     red: 0,
     blue: 0,
+    bar: 0,
     green: 0,
   });
 
@@ -1651,6 +1675,7 @@ test('reservation summaries enforce active seat and drink limits', () => {
     original: 0,
     red: 11,
     blue: 1,
+    bar: 0,
     green: 5,
   });
 

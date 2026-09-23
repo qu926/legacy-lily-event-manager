@@ -338,6 +338,7 @@ test("initial sync applies remote tombstones before accepting pending data from 
   const { context, functions } = loadFunctions(source, [
     ...migrationFunctions,
     "initializeSharedState",
+    "cacheConfirmedSharedState",
   ], globals);
 
   await functions.initializeSharedState();

@@ -270,7 +270,11 @@ let pendingAttendanceUserId = "";
 const archiveResult = archiveFinishedEvents(state);
 if (archiveResult.changed) {
   state = archiveResult.state;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn("Startup cache unavailable", error);
+  }
 }
 let siteUnlocked = sessionStorage.getItem(SITE_SESSION_KEY) === "1";
 let adminUnlocked = sessionStorage.getItem(ADMIN_SESSION_KEY) === "1";
@@ -319,7 +323,11 @@ function loadState() {
     hasStoredLocalState = true;
     const migrated = migrateState(parsed);
     if (JSON.stringify(parsed) !== JSON.stringify(migrated)) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      } catch (error) {
+        console.warn("Migrated cache unavailable", error);
+      }
     }
     return migrated;
   } catch (error) {
@@ -1130,9 +1138,9 @@ async function initializeSharedState() {
         shouldSaveMigratedState = true;
       }
       if (shouldSaveMigratedState) await saveSharedStateWithRetry(state, record.updatedAt);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const cacheSaved = cacheConfirmedSharedState(state);
       localStorage.removeItem(PENDING_LOCAL_CHANGES_KEY);
-      syncStatus = { mode: "supabase", text: "共有DBと同期済み" };
+      syncStatus = { mode: "supabase", text: cacheSaved ? "共有DBと同期済み" : "共有DBと同期済み（端末保存は容量不足・制限あり）" };
       sharedStateInitialized = true;
       if (typeof resolvePendingAttendanceUserSelection === "function") resolvePendingAttendanceUserSelection();
       render();
@@ -1306,7 +1314,23 @@ function hasPersistableMerge(before, after) {
   });
 }
 
+// Only use after the remote state has been read or successfully saved.
+function cacheConfirmedSharedState(confirmedState) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(confirmedState));
+    return true;
+  } catch (error) {
+    if (!["QuotaExceededError", "NS_ERROR_DOM_QUOTA_REACHED", "SecurityError"].includes(error?.name)) throw error;
+    console.warn("Shared state confirmed; local cache unavailable", error);
+    return false;
+  }
+}
+
 function shortSyncError(error, fallback) {
+  if (["QuotaExceededError", "NS_ERROR_DOM_QUOTA_REACHED"].includes(error?.name)) return "端末の保存容量が不足しています（未保存の入力は消さないでください）";
+  if (error?.name === "SecurityError") return "ブラウザの保存制限で処理できません";
+  if (error?.name === "AbortError") return `${fallback}（通信がタイムアウトしました）`;
+  if (error instanceof TypeError && /fetch|network|load failed/i.test(error.message)) return `${fallback}（通信エラー：回線・ブラウザの制限を確認）`;
   const message = String(error?.message || error || fallback);
   const status = message.match(/Supabase (?:load|save) failed: (\d+)/)?.[1];
   if (status) return `${fallback} (${status})`;

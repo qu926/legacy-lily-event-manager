@@ -252,6 +252,10 @@ export function mergeSharedState(remoteState, localState) {
   merged.roles = mergeByKey(remote.roles, local.roles, (item) => item.id || item.name);
   merged.staff_members = mergeByKey(remote.staff_members, local.staff_members, (item) => item.id);
   merged.long_vacations = mergeByKey(remote.long_vacations, local.long_vacations, (item) => item.id);
+  const deletedVacations = new Map([...(remote.long_vacations || []), ...(local.long_vacations || [])]
+    .filter((item) => item.is_deleted).map((item) => [item.id, item]));
+  merged.long_vacations = merged.long_vacations.map((item) => deletedVacations.has(item.id)
+    ? { ...deletedVacations.get(item.id), is_active: false } : item);
   merged.event_dates = mergeByKey(remote.event_dates, local.event_dates, (item) => item.id || item.event_date);
   merged.attendance_entries = mergeByKey(remote.attendance_entries, local.attendance_entries, (item) => {
     return item.event_date_id && item.user_id ? `${item.event_date_id}:${item.user_id}` : item.id;
@@ -663,6 +667,7 @@ export function isOnVacation(state, userId, eventDate) {
   return state.long_vacations.some((vacation) => {
     return (
       vacation.user_id === userId &&
+      !vacation.is_deleted &&
       vacation.is_active &&
       vacation.start_date <= eventDate &&
       vacation.end_date >= eventDate
@@ -1823,6 +1828,7 @@ export function upsertVacation(state, input, now = new Date()) {
   const draft = clone(state);
   const stamp = new Date(now).toISOString();
   const existing = input.id ? draft.long_vacations.find((vacation) => vacation.id === input.id) : null;
+  if (input.id && (!existing || existing.is_deleted)) return { state, ok: false, errors: ["この長期休暇は削除されています。"] };
   const before = existing ? clone(existing) : null;
   const after = {
     ...(existing || { id: createId("vac"), created_at: stamp }),
@@ -1843,6 +1849,18 @@ export function upsertVacation(state, input, now = new Date()) {
   pushHistory(draft, "long_vacation", after.id, before, after, stamp, before ? "長期休暇を編集" : "長期休暇を追加");
   touch(draft, stamp);
   return { state: draft, ok: true, vacation: after, errors: [] };
+}
+
+export function deleteVacation(state, id, now = new Date()) {
+  const draft = clone(state);
+  const vacation = draft.long_vacations.find((item) => item.id === id && !item.is_deleted);
+  if (!vacation) return { state, ok: false, errors: ["削除対象の長期休暇が見つかりません。"] };
+  const before = clone(vacation);
+  const stamp = new Date(now).toISOString();
+  Object.assign(vacation, { is_deleted: true, is_active: false, updated_at: stamp });
+  pushHistory(draft, "long_vacation", id, before, vacation, stamp, "長期休暇を削除");
+  touch(draft, stamp);
+  return { state: draft, ok: true, errors: [] };
 }
 
 export function upsertEvent(state, input, now = new Date()) {

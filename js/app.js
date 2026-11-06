@@ -92,8 +92,9 @@ import {
   upsertStaffMember,
   upsertUser,
   upsertVacation,
+  deleteVacation,
   wasReservationChangedAfterEventCutoff,
-} from "./core.js?v=tower-200p-20260918";
+} from "./core.js?v=vacation-history-20261106";
 
 function loadRequiredAppConfig() {
   const config = window.EVENT_MANAGER_CONFIG;
@@ -3975,7 +3976,7 @@ function renderStaffManagementTable(staffMembers, emptyText, caption = "内勤�
 
 function renderVacationManagement() {
   const editing = view.editingVacationId
-    ? state.long_vacations.find((vacation) => vacation.id === view.editingVacationId)
+    ? state.long_vacations.find((vacation) => vacation.id === view.editingVacationId && !vacation.is_deleted)
     : null;
   return `
     <section class="panel page-panel">
@@ -3996,13 +3997,13 @@ function renderVacationManagement() {
         <table class="data-table">
           <thead><tr><th>ホスト</th><th>期間</th><th>状態</th><th>理由</th><th>操作</th></tr></thead>
           <tbody>
-            ${state.long_vacations.map((vacation) => `
+            ${state.long_vacations.filter((vacation) => !vacation.is_deleted).map((vacation) => `
               <tr>
                 <td>${escapeHtml(findUser(state, vacation.user_id)?.display_name || "不明")}</td>
                 <td>${escapeHtml(vacation.start_date)} - ${escapeHtml(vacation.end_date)}</td>
                 <td>${vacation.is_active ? "有効" : "無効"}</td>
                 <td>${escapeHtml(vacation.reason || "")}</td>
-                <td><button class="icon-button" data-action="edit-vacation" data-vacation-id="${vacation.id}" type="button">編集</button></td>
+                <td><button class="icon-button" data-action="edit-vacation" data-vacation-id="${escapeAttr(vacation.id)}" type="button">編集</button><button class="ghost-button" data-action="delete-vacation" data-vacation-id="${escapeAttr(vacation.id)}" type="button">削除</button></td>
               </tr>
             `).join("") || `<tr><td colspan="5">長期休暇は未登録です。</td></tr>`}
           </tbody>
@@ -4319,16 +4320,24 @@ function renderDiscordTools() {
 }
 
 function renderHistories() {
+  const historySort = view.historySort || "newest";
+  const histories = [...state.histories].sort((a, b) => {
+    const time = (Date.parse(b.changed_at) || 0) - (Date.parse(a.changed_at) || 0);
+    if (historySort === "oldest") return -time;
+    if (historySort === "target") return formatHistoryTarget(a).localeCompare(formatHistoryTarget(b), "ja") || time;
+    return time;
+  });
   return `
     <section class="panel page-panel">
       <div class="panel-heading">
         <div><p class="eyebrow">History</p><h2>変更履歴</h2></div>
+        <label><span>並び順</span><select data-role="history-sort">${[["newest", "日時：新しい順"], ["oldest", "日時：古い順"], ["target", "対象順"]].map(([value, label]) => option(value, label, historySort === value)).join("")}</select></label>
       </div>
       <div class="table-wrap">
         <table class="data-table history-table">
           <thead><tr><th>日時</th><th>対象</th><th>内容</th><th>変更前</th><th>変更後</th></tr></thead>
           <tbody>
-            ${state.histories.map((history) => `
+            ${histories.map((history) => `
               <tr>
                 <td>${formatHistoryDateTime(history.changed_at)}</td>
                 <td>${escapeHtml(formatHistoryTarget(history))}</td>
@@ -4821,6 +4830,14 @@ function handleClick(event) {
   if (action === "edit-vacation") {
     view.editingVacationId = button.dataset.vacationId;
     renderAndFocusEditForm("form[data-action='save-vacation']");
+  }
+  if (action === "delete-vacation") {
+    const vacation = state.long_vacations.find((item) => item.id === button.dataset.vacationId && !item.is_deleted);
+    if (!vacation || !window.confirm(`${findUser(state, vacation.user_id)?.display_name || "不明"} の長期休暇（${vacation.start_date} ～ ${vacation.end_date}）を削除しますか？`)) return;
+    const result = deleteVacation(state, vacation.id);
+    if (result.ok && view.editingVacationId === vacation.id) view.editingVacationId = "";
+    applyResult(result, "長期休暇を削除しました。");
+    return;
   }
   if (action === "new-vacation") {
     view.editingVacationId = "";
@@ -5344,6 +5361,12 @@ async function saveBulkStaffAttendance(form) {
 }
 
 function handleChange(event) {
+  const historySort = event.target.closest("[data-role='history-sort']");
+  if (historySort) {
+    view.historySort = historySort.value;
+    render();
+    return;
+  }
   const eventSelect = event.target.closest("[data-role='event-select']");
   if (eventSelect) {
     view.eventId = eventSelect.value;

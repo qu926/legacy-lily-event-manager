@@ -2341,11 +2341,11 @@ function renderReservationRequestPrototype(eventId, { adminMode = false, locked 
   const requests = getReservationRequestsForEvent(state, eventId);
   const buckets = getReservationRequestBuckets(state, eventId);
   const acceptance = getReservationRequestAcceptanceStatus(state, eventId);
-  const requestLocked = locked || (!adminMode && acceptance.closed);
   const drinkPlanLocked = event.status === EVENT_STATUSES[2];
   const editingRequest = view.editingReservationRequestId
     ? requests.find((request) => request.id === view.editingReservationRequestId)
     : null;
+  const requestLocked = locked || (!adminMode && acceptance.closed && !editingRequest);
   return `
     <section class="request-panel">
       <div class="section-title">

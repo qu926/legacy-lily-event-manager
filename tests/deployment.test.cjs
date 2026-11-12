@@ -38,6 +38,36 @@ function fromRoot(...segments) {
   return path.join(root, ...segments);
 }
 
+test("full reservation intake locks new requests but not existing edits", async () => {
+  const source = await readText("js", "app.js");
+  let receivedLock;
+  const context = {
+    state: {}, view: { editingReservationRequestId: "existing" },
+    findEvent: () => ({ status: "受付中" }),
+    getReservationSetting: () => ({ instance_count: 1 }),
+    getReservationRequestsForEvent: () => [{ id: "existing" }],
+    getReservationRequestBuckets: () => ({}),
+    getReservationRequestAcceptanceStatus: () => ({ closed: true }),
+    EVENT_STATUSES: ["受付中", "終了", "休み"],
+    renderDrinkPlans: () => "", renderReservationRequestSummaryV2: () => "",
+    renderReservationRequestBucketsV2: () => "", renderReservationRequestList: () => "",
+    renderReservationRequestForm: (_id, _setting, locked) => { receivedLock = locked; return ""; },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource(source, "renderReservationRequestPrototype"), context);
+  context.renderReservationRequestPrototype("event");
+  assert.equal(receivedLock, false);
+  context.view.editingReservationRequestId = "";
+  context.renderReservationRequestPrototype("event");
+  assert.equal(receivedLock, true);
+  context.view.editingReservationRequestId = "missing";
+  context.renderReservationRequestPrototype("event");
+  assert.equal(receivedLock, true);
+  context.view.editingReservationRequestId = "existing";
+  context.renderReservationRequestPrototype("event", { locked: true });
+  assert.equal(receivedLock, true);
+});
+
 async function readText(...segments) {
   return fs.readFile(fromRoot(...segments), "utf8");
 }

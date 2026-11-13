@@ -303,6 +303,13 @@ view.archiveEventId = getDefaultArchiveEventId();
 view.staffAttendanceMemberId = getActiveStaffMembers(state)[0]?.id || "";
 restoreViewFromLocation();
 
+const instanceDrafts = new Map();
+let instanceSaving = false;
+window.addEventListener("beforeunload", (event) => {
+  if (!instanceDrafts.size) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 render();
 initializeSharedState();
 
@@ -3550,6 +3557,20 @@ function renderHostManagementTable(users, emptyText, caption = "ホスト一覧"
   `;
 }
 
+function instanceDraftKey(eventId, type, id) {
+  return JSON.stringify([eventId, type, id]);
+}
+
+function instancePreviewState() {
+  const preview = { ...state, instance_assignments: [...(state.instance_assignments || [])] };
+  for (const { payload } of instanceDrafts.values()) {
+    preview.instance_assignments = preview.instance_assignments.filter((row) =>
+      !(row.event_date_id === payload.event_date_id && row.person_type === payload.person_type && row.person_id === payload.person_id));
+    preview.instance_assignments.push({ ...payload, is_deleted: false });
+  }
+  return preview;
+}
+
 function renderInstancePlanner() {
   const model = getInstancePlannerModel(view.eventId);
   const announcement = buildInstanceDiscordText(model);
@@ -3561,6 +3582,9 @@ function renderInstancePlanner() {
           <h2>${model.event ? formatDateLabel(model.event.event_date) : "対象日未設定"} インス振り分け</h2>
         </div>
         <div class="toolbar compact">
+          <span role="status">未保存の変更 ${instanceDrafts.size}件</span>
+          <button class="primary-button" data-action="save-instance-drafts" type="button" ${!instanceDrafts.size || instanceSaving ? "disabled" : ""}>${instanceSaving ? "保存中…" : "振り分けを保存"}</button>
+          <button class="ghost-button" data-action="discard-instance-drafts" type="button" ${!instanceDrafts.size || instanceSaving ? "disabled" : ""}>変更を破棄</button>
           <button class="ghost-button" data-action="generate-instance-image" type="button"${model.event ? "" : " disabled"}>画像を生成</button>
           <button class="ghost-button" data-action="download-instance-image" data-instance-key="a" type="button"${model.event ? "" : " disabled"}>第1PNG保存</button>
           <button class="ghost-button" data-action="download-instance-image" data-instance-key="b" type="button"${model.event ? "" : " disabled"}>第2PNG保存</button>
@@ -3731,7 +3755,7 @@ function renderInstanceReservationSummary(instanceKey, model) {
   `;
 }
 
-function getInstancePlannerModel(eventId) {
+function getInstancePlannerModel(eventId, state = instancePreviewState()) {
   const event = findEvent(state, eventId);
   const hostRows = [];
   const ineligibleHosts = [];
@@ -4767,6 +4791,15 @@ function handleClick(event) {
     saveInstanceAssignmentFromButton(button);
     return;
   }
+  if (action === "save-instance-drafts") { saveInstanceDrafts(); return; }
+  if (action === "discard-instance-drafts") {
+    if (!instanceSaving && window.confirm("未保存の振り分け変更をすべて破棄しますか？")) { instanceDrafts.clear(); render(); }
+    return;
+  }
+  if (["generate-instance-image", "download-instance-image", "download-instance-images"].includes(action) && instanceDrafts.size) {
+    showToast("先に振り分けを保存してください。", "error");
+    return;
+  }
   if (action === "generate-instance-image") {
     generateInstanceImage().catch(handleInstanceImageError);
     return;
@@ -5674,13 +5707,62 @@ async function saveAdminStaffAttendance(button) {
 }
 
 function saveInstanceAssignmentFromButton(button) {
-  const result = upsertInstanceAssignment(state, {
+  if (instanceSaving) return;
+  const payload = {
     event_date_id: view.eventId,
     person_type: button.dataset.personType,
     person_id: button.dataset.personId,
     instance_key: button.dataset.instanceKey,
-  });
-  applyResult(result, "インスタンス振り分けを保存しました。");
+  };
+  const key = instanceDraftKey(payload.event_date_id, payload.person_type, payload.person_id);
+  const base = instanceDrafts.has(key) ? instanceDrafts.get(key).base : structuredClone(getInstanceAssignment(state, payload.event_date_id, payload.person_type, payload.person_id) || null);
+  if ((base?.instance_key || "unassigned") === payload.instance_key) instanceDrafts.delete(key);
+  else instanceDrafts.set(key, { payload, base });
+  render();
+}
+
+async function saveInstanceDrafts() {
+  if (instanceSaving || !instanceDrafts.size) return;
+  instanceSaving = true;
+  render();
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const shared = isSharedStorageConfigured();
+      const record = shared ? await loadSharedRecord() : { state, updatedAt: null };
+      if (shared && !record.state) throw new Error("共有DBを読み込めません。下書きは残しています。");
+      let next = shared ? migrateState(record.state) : state;
+      for (const { payload, base } of instanceDrafts.values()) {
+        const current = getInstanceAssignment(next, payload.event_date_id, payload.person_type, payload.person_id) || null;
+        if (JSON.stringify(current) !== JSON.stringify(base) && current?.instance_key !== payload.instance_key) {
+          throw new Error("他の運営が同じ対象の配置を変更しています。上書きせず中止しました。下書きを控え、変更を破棄して再読み込みしてください。");
+        }
+        if (current?.instance_key === payload.instance_key) continue;
+        const result = upsertInstanceAssignment(next, payload);
+        if (!result.ok) throw new Error(result.errors.join(" / "));
+        next = result.state;
+      }
+      try {
+        if (shared) await saveSharedState(next, { expectedUpdatedAt: record.updatedAt });
+        else localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      } catch (error) {
+        if (error.code === "STALE_SHARED_STATE" && attempt < 2) continue;
+        throw error;
+      }
+      state = next;
+      instanceDrafts.clear();
+      if (shared) {
+        const cached = cacheConfirmedSharedState(state);
+        syncStatus = { mode: "supabase", text: cached ? "共有DBと同期済み" : "共有DBと同期済み（端末保存は容量不足・制限あり）" };
+      }
+      showToast("振り分けを保存しました。");
+      return;
+    }
+  } catch (error) {
+    showToast(`${shortSyncError(error, "保存結果を確認できません")} 入力した振り分けは残しています。`, "error");
+  } finally {
+    instanceSaving = false;
+    render();
+  }
 }
 
 async function saveHostPhotoFromInput(input) {
